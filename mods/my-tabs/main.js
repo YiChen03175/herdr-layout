@@ -13,12 +13,19 @@ function find(node, id) {
 
 // #rrggbb plus an alpha byte; other forms pass through.
 const alpha = (color, a) => /^#[0-9a-f]{6}$/i.test(color ?? "") ? color + a : color;
+// A localStorage value, or `fallback` when it's missing or unreadable.
+function stored(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
+// blocked or unread (done): the icon hops in place, asking for you (native loop, no timer).
+const BOUNCE = { from: 0, to: -3.5, period: 700, easing: "ease-in-out" };
 
 // What the tab's program calls it now (Claude Code titles its terminal with the session
 // name, behind a status glyph like ✳ or a spinner). A shell prompt or a bare program
 // name ("claude") isn't a name.
-function liveTitle(tabId) {
-  const own = panes().filter(p => p.tab === tabId && p.terminal && !p.program?.shell);
+// own: the tab's panes (read once per render by the caller: each panes() copies them all).
+function liveTitle(own) {
+  own = own.filter(p => p.terminal && !p.program?.shell);
   const p = own.find(p => p.focused) ?? own[0];
   const title = (p?.title ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
   if (!title) return null;
@@ -49,7 +56,7 @@ const SQUEEZE_MIN = 40;
 const SHINE_KICK = 30; // ms between parking a sweep and starting it
 // Tab order by urgency: higher goes left. idle, working and no agent are equal.
 const RANK = { blocked: 3, done: 2 };
-const anyWorking = () => spaces().some(s => s.active && s.tabs.some(c => c.status === "working"));
+const anyWorking = (sp = spaces()) => sp.some(s => s.active && s.tabs.some(c => c.status === "working"));
 // Read: an agent tab you've seen since it finished (idle, not the shown tab) is a
 // little faded; one that finished unseen (done) stays at full strength.
 const READ = { dim: "a6", icon: 0.6 };
@@ -66,9 +73,11 @@ export default class Tabs extends View {
     // Sweeps chain one after another while something works; a light check
     // (no redraw) starts the chain within 200 ms of a tab starting to work,
     // instead of waiting out a whole period with the shine parked.
+    // One spaces() read per check, shared by both.
     cx.timer.every(200, (cx) => {
-      if (!this.shineRunning && anyWorking()) this.startSweep(cx);
-      this.reorder(cx);
+      const sp = spaces();
+      if (!this.shineRunning && anyWorking(sp)) this.startSweep(cx);
+      this.reorder(cx, sp);
     });
     this.ranks = {};      // tab id -> its last rank, to see what just got more urgent
     this.flip = null;     // { ids, offsets, applied, until }: a reorder sliding into place
@@ -83,8 +92,8 @@ export default class Tabs extends View {
     this.pending = null;  // a dropped move, shown in place until the new order arrives
     this.gen = 0;         // bumped when a reorder lands, so tabs don't slide back
     this.widths = {};     // tab id -> width, window px
-    this.numbers = JSON.parse(localStorage.getItem("numbers") ?? "{}"); // unnamed tab id -> its number
-    this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    this.numbers = stored("numbers", {}); // unnamed tab id -> its number
+    this.panels = stored("panels", {});
   }
 
   // The side panel is remembered per space: switching shows that space's choice
@@ -117,10 +126,12 @@ export default class Tabs extends View {
 
   // An unnamed tab keeps the number it first showed (its place then, or the next free one),
   // so moving tabs doesn't renumber them.
-  labels(shown) {
-    const live = new Set(spaces().flatMap(p => p.tabs.map(c => c.id)));
+  labels(shown, sp) {
+    const live = new Set(sp.flatMap(p => p.tabs.map(c => c.id)));
     let changed = false;
     if (live.size) for (const id of Object.keys(this.numbers)) if (!live.has(id)) { delete this.numbers[id]; changed = true; }
+    // Closed tabs' measures and ranks go too.
+    if (live.size) for (const m of [this.ranks, this.widths, this.labelWidths, this.shineFirst]) for (const id of Object.keys(m)) if (!live.has(id)) delete m[id];
     const taken = new Set(shown.filter(c => !c.named && this.numbers[c.id]).map(c => this.numbers[c.id]));
     for (const c of shown) {
       if (c.named || this.numbers[c.id]) continue;
@@ -195,10 +206,14 @@ export default class Tabs extends View {
   // as urgent; one that got calmer stays put (looking at a tab doesn't shuffle
   // the others). The shown space's move slides: each tab starts drawn where it
   // was and eases to its new place.
-  reorder(cx) {
+  reorder(cx, sp = spaces()) {
     if (this.drag?.active || this.pending || this.flip) return;
+    // Nothing moves unless some tab's status changed since the last look.
+    const sig = sp.map(s => s.tabs.map(c => `${c.id}:${c.status}`).join()).join("|");
+    if (sig === this.rankSig) return;
+    this.rankSig = sig;
     const rank = (c) => RANK[c.status] ?? 1;
-    for (const space of spaces()) {
+    for (const space of sp) {
       const ids = space.tabs.map(c => c.id);
       for (const [i, c] of space.tabs.entries()) {
         const was = this.ranks[c.id], now = rank(c);
@@ -339,7 +354,7 @@ export default class Tabs extends View {
         .hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("tab.select", { id: c.id }))
         .when(Boolean(program?.icon), el => el.child((program.tint ? svg(program.icon).size(14) : image(program.icon).size(14))
-          .when(loud, el => el.relative().loop("top", { from: 0, to: -3.5, period: 700, easing: "ease-in-out" }))))
+          .when(loud, el => el.relative().loop("top", BOUNCE))))
         .child(div().flex_1().min_w(0).truncate().child(nameOf(c, program)));
     };
     return HoverCard.new("tab-more-menu").anchor("top_right").open_delay(MORE_OPEN_MS).close_delay(250)
@@ -350,8 +365,12 @@ export default class Tabs extends View {
 
   render() {
     const t = theme();
-    const space = spaces().find(p => p.active);
+    const sp = spaces();
+    const space = sp.find(p => p.active);
     const all = space?.tabs ?? [];
+    // Every pane, by tab: one panes() read for the whole render.
+    const byTab = new Map();
+    for (const p of panes()) byTab.set(p.tab, [...(byTab.get(p.tab) ?? []), p]);
     if (this.pending && all.map(c => c.id).join() === this.pending.ids.join()) { this.pending = null; this.gen++; }
     // The tabs that fit; the rest go in the +N menu at the end of the strip.
     const { shown, more } = this.fit(all);
@@ -366,17 +385,17 @@ export default class Tabs extends View {
     const lifted = drag?.active ? drag.from : this.pending ? this.pending.from : null;
     // No hover looks while a tab is dragged or settling.
     const still = lifted === null;
-    const label = this.labels(all);
+    const label = this.labels(all, sp);
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).cursor_pointer().size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
-    const programOf = (c) => panes().find(p => p.tab === c.id && p.program?.agent)?.program ?? panes().find(p => p.tab === c.id)?.program;
+    const programOf = (c) => { const own = byTab.get(c.id) ?? []; return own.find(p => p.program?.agent)?.program ?? own[0]?.program; };
     // A tab the + menu opened is named after its program ("Claude Code"): that's not
     // a name anyone chose, so the program's own title (the session name) wins.
     // A name someone gave it (tab.rename) stays.
     const nameOf = (c, program) => {
       const chosen = c.named && c.name !== program?.name;
-      return /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : chosen ? c.name : liveTitle(c.id) ?? (c.named ? c.name : label[c.id]);
+      return /^tb\d+$/.test(c.name) ? program?.name ?? "Terminal" : chosen ? c.name : liveTitle(byTab.get(c.id) ?? []) ?? (c.named ? c.name : label[c.id]);
     };
     const item = (c, i) => {
       const program = programOf(c);
@@ -418,8 +437,7 @@ export default class Tabs extends View {
         .when(Boolean(program?.icon), el => el.child((program.tint ? svg(program.icon).size(14).text_color(c.active ? t.foreground : t.muted) : image(program.icon).size(14))
           // The shown tab's icon stays bright, working or not.
           .when(!c.active && (working || read), el => el.opacity(working ? SHINE.icon : READ.icon))
-          // blocked or unread (done): the icon hops in place, asking for you (native loop, no timer).
-          .when(c.status === "blocked" || c.status === "done", el => el.relative().loop("top", { from: 0, to: -3.5, period: 700, easing: "ease-in-out" }))))
+          .when(c.status === "blocked" || c.status === "done", el => el.relative().loop("top", BOUNCE))))
         .child(this.title(c, c.zoomed ? `${name} Z` : name, working, read, t));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();

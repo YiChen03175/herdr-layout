@@ -56,6 +56,7 @@ const railSquare = (t, rowH, selected, hovered) => {
 const MAC_EVERY = 250;
 const TOAST_SETTLE = 150; // ms: Herdr has put its corner note up by then
 const RECAP_EVERY = 5000;
+const RECAP_EVERY_AWAY = 30000; // while the window isn't in front
 const RECAP_DELAY = 300; // how long the pointer rests on a row before the card opens
 const RECAP_W = 300;
 // Popups from the sidebar (the + menu, a recap) open just clear of its edge, their
@@ -64,14 +65,14 @@ const RECAP_W = 300;
 const POP_GAP = 4;
 const POP_LIFT = 6;
 
-// To the rail (on macOS wide enough for the traffic lights), or back to the width it had.
-function toggleSidebar() {
-  const width = find(layout(), "sidebar")?.size?.px;
-  if (!narrow()) setShared("sidebar.width", width);
-  // Mods edited before the rail went by width still read the flag.
-  setShared("sidebar.collapsed", !narrow());
-  run("layout.resize", { id: "sidebar", px: narrow() ? (shared("sidebar.width") ?? 268) : window()?.platform === "macos" ? 76 : 44 });
+// #rrggbb plus an alpha byte; other forms pass through.
+const alpha = (color, a) => /^#[0-9a-f]{6}$/i.test(color ?? "") ? color + a : color;
+// A localStorage value, or `fallback` when it's missing or unreadable.
+function stored(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 }
+// Agents that write a recap (Claude Code, Grok): without one alive, recap.py has nothing to find.
+const RECAPS = (a) => a.app === "claude-code" || a.program?.key === "claude" || /^grok/.test(a.app ?? "") || a.program?.key === "grok";
 
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
@@ -126,14 +127,15 @@ export default class Agents extends View {
     if (props()?.sortMenu) return;
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
-    this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
-    this.pendingPins = JSON.parse(localStorage.getItem("pins") ?? "[]");
+    this.changed = stored("changed", {});
+    this.pendingPins = stored("pins", []);
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
     this.recaps = {};
     // Recaps already read (opened by a click on their row), so their dot stays gone.
-    this.seenRecaps = JSON.parse(localStorage.getItem("seenRecaps") ?? "{}");
+    this.seenRecaps = stored("seenRecaps", {});
+    this.recapAt = 0;
     this.refreshRecaps(cx);
     cx.timer.every(RECAP_EVERY, (cx) => this.refreshRecaps(cx));
     this.macStatus = null;
@@ -159,35 +161,48 @@ export default class Agents extends View {
       if (!done && !blocked) continue;
       const who = a.program?.name || a.app || "Agent";
       const body = [a.space_name, a.title].filter(Boolean).join(" · ") || a.tab_name || "";
-      this.macNotify(done ? `${who} 完成了` : `${who} 需要你`, body, a);
+      this.macNotify(done ? `${who} 完成了` : `${who} 需要你`, body);
       posted++;
     }
     if (posted) cx.timer.after(TOAST_SETTLE, () => this.closeCornerNotes(posted));
   }
 
-  // Herdr's corner notes can't be turned off, and their ids aren't handed out,
+  // Herdr's corner notes can't be turned off (and the shipped toast mod can't be
+  // replaced: Herdr restores its own on start), and their ids aren't handed out,
   // but every overlay takes the next "o<n>": post one of our own to learn the
-  // count, then close the newest ones before it, only while a note is showing.
+  // count, then close the newest ones before it. Only as many as the newest
+  // overlays in a row are toasts: a menu opened in between stops it, so it
+  // closes nothing rather than the menu.
   closeCornerNotes(n) {
     const probe = notify({ title: "", timeout: 1 });
     closeOverlay(probe);
     const last = Number(String(probe).replace(/^o/, ""));
     if (!Number.isFinite(last)) return;
-    exec(`${home()}/.local/bin/herdr-app`, ["status"]).then((r) => {
-      let shown = 0;
-      try { shown = (JSON.parse(r?.stdout ?? "{}").overlays ?? []).filter((o) => o === "toast").length; } catch {}
-      for (let k = 1; k <= Math.min(n, shown); k++) closeOverlay(`o${last - k}`);
-    });
+    const status = (bin) => exec(bin, ["status"], { timeout: 3000 });
+    status("herdr-app").catch(() => status(`${home()}/.local/bin/herdr-app`)).then((r) => {
+      let open = [];
+      try { open = JSON.parse(r?.stdout ?? "{}").overlays ?? []; } catch {}
+      let toasts = 0;
+      for (let i = open.length - 1; i >= 0 && open[i] === "toast"; i--) toasts++;
+      for (let k = 1; k <= Math.min(n, toasts); k++) closeOverlay(`o${last - k}`);
+    }).catch(() => {});
   }
 
   macNotify(title, body) {
     const q = (x) => `"${String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    exec("osascript", ["-e", `display notification ${q(body || " ")} with title "Herdr" subtitle ${q(title)}`]);
+    exec("osascript", ["-e", `display notification ${q(body || " ")} with title "Herdr" subtitle ${q(title)}`]).catch(() => {});
   }
 
 
+  // Only while a Claude Code or Grok agent is alive, and less often in the background.
   refreshRecaps(cx) {
     if (this.recapBusy) return;
+    if (!agents().some(RECAPS)) {
+      if (this.recapRaw && this.recapRaw !== "{}") { this.recapRaw = "{}"; this.recaps = {}; cx.notify(); }
+      return;
+    }
+    if (!window()?.active && Date.now() - this.recapAt < RECAP_EVERY_AWAY) return;
+    this.recapAt = Date.now();
     this.recapBusy = true;
     cx.spawn(async (cx) => {
       try {
@@ -379,13 +394,14 @@ export default class Agents extends View {
   }
 
   // Live sub-agents of `addr`, depth first, each with the tree lines in front of it.
-  tree(all, addr, lead = []) {
-    const kids = all.filter((k) => k.parent === addr && k.state === "live");
+  // kidsOf: parent address -> its live sub-agents, built once per render.
+  tree(kidsOf, addr, lead = []) {
+    const kids = kidsOf.get(addr) ?? [];
     return kids.flatMap((k, i) => {
       const last = i === kids.length - 1;
       return [
         { t: k, lines: [...lead, last ? "└" : "├"] },
-        ...this.tree(all, k.address, [...lead, last ? "" : "│"]),
+        ...this.tree(kidsOf, k.address, [...lead, last ? "" : "│"]),
       ];
     });
   }
@@ -420,11 +436,11 @@ export default class Agents extends View {
   status(t, a, compact = false) {
     const color = t[a.status] ?? t.dim;
     if (a.status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
-    if (a.status === "blocked" && compact) return div().size(14).flex_none().rounded(4).bg(t.blocked + "26").text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
-    if (a.status === "blocked") return div().flex_none().px(6).h(18).rounded(5).bg(t.blocked + "26").text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
+    if (a.status === "blocked" && compact) return div().size(14).flex_none().rounded(4).bg(alpha(t.blocked, "26")).text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
+    if (a.status === "blocked") return div().flex_none().px(6).h(18).rounded(5).bg(alpha(t.blocked, "26")).text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
     // Idle: a ring; done: a dot.
     if (a.status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
-    return div().size(7).mx(3).flex_none().rounded(4).bg(a.status === "done" ? color : t.dim + "00");
+    return div().size(7).mx(3).flex_none().rounded(4).bg(a.status === "done" ? color : alpha(t.dim, "00"));
   }
 
   render(cx) {
@@ -441,7 +457,10 @@ export default class Agents extends View {
     this.track(list, now);
     this.hold(list);
     const byPriority = sort.id === "priority";
-    const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
+    const kidsOf = new Map();
+    for (const k of all) if (k.parent && k.state === "live") kidsOf.set(k.parent, [...(kidsOf.get(k.parent) ?? []), k]);
+    const subsOf = new Map(list.map((a) => [a.address, this.tree(kidsOf, a.address)]));
+    const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...subsOf.get(a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
     const rankOf = (a) => urgency.get(a.address);
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
     const pinned = list.filter((a) => a.pinned);
@@ -450,7 +469,7 @@ export default class Agents extends View {
     setAgentOrder(list.map((a) => a.address));
 
     const withKids = (a, i) => {
-      const subs = collapsed ? [] : this.tree(all, a.address);
+      const subs = collapsed ? [] : subsOf.get(a.address);
       // Full rows get the rail rows' half gap too: crossing the rail's edge moves nothing.
       const r = collapsed ? row(a, i, subs) : div().py(ROW_GAP / 2).child(row(a, i, subs));
       if (this.folded.has(a.address)) return [r];

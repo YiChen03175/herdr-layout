@@ -23,21 +23,16 @@ const track = (el) => el.on_size_change((size, cx) => {
 // The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
 const narrow = () => sidebarPx() < 160;
 
+// The rail, like Chrome's collapsed tabs: just icons, as narrow as an icon row.
 // The macOS window buttons live in the tab bar, across the top of the window
 // (layouts/my-main.json), never over the sidebar: nothing here makes room for them.
-const lights = () => null;
-
-// The rail, like Chrome's collapsed tabs: just icons. As narrow as an icon row,
-// and wide enough for the window buttons. The toggle sits under the buttons there.
-const RAIL_MIN = 40; // keep equal to the sidebar's "min" in layouts/my-main.json
-const railWidth = () => Math.ceil(Math.max(RAIL_MIN, lights()?.end ?? 0));
+const RAIL_W = 40; // keep equal to the sidebar's "min" in layouts/my-main.json
 // The rail's one button size: every icon in the sidebar sits on a square this
 // big, EDGE from the sidebar's sides and its section edges, GAP from the next.
 const TOGGLE = 30;
 const EDGE = 5;
 const RAIL_GAP = 2;
 const RAIL_ICON = 16;
-const UNDER_GAP = 8; // space between the window buttons and the toggle under them
 
 // Smoothly to the rail, or back to the width it had: the width eases over a
 // quarter second (a short burst of resizes on a click, nothing while idle).
@@ -47,7 +42,7 @@ function toggleSidebar(view, cx) {
   if (!narrow()) setShared("sidebar.width", from);
   // Mods edited before the rail went by width still read the flag.
   setShared("sidebar.collapsed", !narrow());
-  const to = narrow() ? (shared("sidebar.width") ?? 268) : railWidth();
+  const to = narrow() ? (shared("sidebar.width") ?? 268) : RAIL_W;
   const start = Date.now(), run_id = (view.slide = (view.slide ?? 0) + 1);
   const ease = (k) => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
   const step = (cx) => {
@@ -92,7 +87,7 @@ export default class WorkspaceChrome extends View {
         .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
     }
 
-    const W = sidebarPx(), rail = railWidth(), L = lights();
+    const W = sidebarPx(), rail = RAIL_W;
     // The other sidebar mods read the rail width from here.
     if (shared("sidebar.rail") !== rail) setShared("sidebar.rail", rail);
     // Never narrower than the rail: a zoom change that needs a wider one widens it.
@@ -101,11 +96,11 @@ export default class WorkspaceChrome extends View {
       run("layout.resize", { id: "sidebar", px: rail });
     } else if (W >= rail - 0.5) this.widening = false;
     // The search and the toggle move together with the width: side by side at the
-    // right of the top row while there's room, stacked under the window buttons on
-    // the rail (toggle, then search), sliding in between as it narrows. The row
+    // right of the top row while there's room, stacked on the rail (toggle, then
+    // search), sliding in between as it narrows. The row
     // grows with them, only as tall as they need: 46 when they're side by side.
     const BASE_H = 46, GAP = RAIL_GAP;
-    const rowNeed = (L ? L.end : 8) + TOGGLE + GAP + TOGGLE + 10;
+    const rowNeed = 8 + TOGGLE + GAP + TOGGLE + 10;
     // Where the buttons start to slide down is where the sidebar's titles go (my-spaces, my-agents).
     if (shared("sidebar.slide") !== Math.ceil(rowNeed)) setShared("sidebar.slide", Math.ceil(rowNeed));
     const p = Number.isFinite(W)
@@ -113,8 +108,8 @@ export default class WorkspaceChrome extends View {
       // still leaves them their whole gap under the buttons.
       ? Math.max(0, Math.min(1, (rowNeed - W) / Math.max(1, rowNeed - rail - 6)))
       : 0;
-    const colLeft = (L ? L.center : rail / 2) - TOGGLE / 2;
-    const colTop = L ? L.bottom + UNDER_GAP : EDGE;
+    const colLeft = rail / 2 - TOGGLE / 2;
+    const colTop = EDGE;
     const fullH = Math.max(BASE_H, Math.ceil(colTop + TOGGLE + GAP + TOGGLE + EDGE));
     const wantH = Math.round(BASE_H + (fullH - BASE_H) * p);
     const H = find(layout(), "brand")?.size?.px ?? BASE_H;
@@ -133,7 +128,6 @@ export default class WorkspaceChrome extends View {
     // measured width, wider than the sidebar).
     return track(h_flex().id("brand-root")).relative().size_full().min_w(0).bg(t.chrome)
       .pl(collapsed ? 0 : 14).pr(collapsed ? 0 : 10 + TOGGLE + GAP + TOGGLE + 6).gap(4).items_center().text_size(13.5)
-      .when(Boolean(L) && !collapsed, el => el.pl(76))
       .when(!collapsed, el => el.child(h_flex().flex_1().min_w(0).gap(8).items_center().child(image("frame/welcome/herdr.png").size(20).rounded(5).flex_none()).child(div().min_w(0).truncate().font_semibold().text_color(t.foreground).child("Herdr"))))
       .child(this.button("search", svg("mods/my-chrome/search.svg").size(RAIL_ICON), () => run("mod.open", { name: "picker" }))
         .absolute().left(searchAt.left).top(searchAt.top))

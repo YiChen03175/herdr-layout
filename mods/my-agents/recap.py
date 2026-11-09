@@ -51,20 +51,24 @@ def lines_backward(path):
 
 
 def env_terminals(pids):
-    """pid -> HC_TERMINAL_ID for the live ones among `pids`."""
+    """pid -> (HC_TERMINAL_ID, argv[0]) for the live ones among `pids`.
+
+    Exits non-zero when `ps` can't answer: an empty answer would read as
+    "no agent has a recap" and make the mod forget which ones were read.
+    """
     if not pids:
         return {}
     try:
         out = subprocess.run(["ps", "-E", "-ww", "-o", "pid=,command=", "-p", ",".join(map(str, pids))],
                              capture_output=True, text=True, timeout=10).stdout
     except Exception:
-        return {}
+        sys.exit(1)
     found = {}
     for line in out.splitlines():
-        m = re.match(r"\s*(\d+)\s", line)
+        m = re.match(r"\s*(\d+)\s+(\S+)\s", line)
         t = re.search(r"(?:^|\s)HC_TERMINAL_ID=(\S+)", line)
         if m and t:
-            found[int(m.group(1))] = t.group(1)
+            found[int(m.group(1))] = (t.group(1), m.group(2))
     return found
 
 
@@ -154,7 +158,11 @@ def main():
     grok = grok_sessions()
     terms = env_terminals(sorted(set(claude) | set(grok)))
     out = {}
-    for pid, term in terms.items():
+    for pid, (term, name) in terms.items():
+        # A session file whose Claude Code is gone can name a pid some other
+        # program reuses now: only a live claude (or the node running it) counts.
+        if pid in claude and not re.search(r"claude|node", name, re.I):
+            continue
         try:
             r = claude_recap(claude[pid]) if pid in claude else grok_recap(*grok[pid])
         except Exception:

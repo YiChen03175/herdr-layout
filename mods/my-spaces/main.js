@@ -43,7 +43,6 @@ const railSquare = (t, rowH, selected, hovered) => {
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
     .when(selected || hovered, (el) => el.bg(selected ? t.selected : t.hover));
 };
-const LETTER_SEED = {}; // space id -> starting letter, for spaces made before letters were kept
 function letter(w) {
   if (w.named) return [...w.name][0]?.toUpperCase() ?? "?";
   return (shared("space.letters") ?? {})[w.id] ?? ([...w.name][0]?.toUpperCase() ?? "?");
@@ -65,6 +64,10 @@ function place(s, ps) {
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
+// A localStorage value, or `fallback` when it's missing or unreadable.
+function stored(key, fallback) {
+  try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
+}
 const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // Changes made outside Herdr (an editor's save, a commit in another app): looked
 // for this often, in repos the list shows, while the window is in front.
@@ -73,11 +76,6 @@ const FALLBACK = 60000;
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
-
-// A space speaks up only when something in it needs you.
-export function glyph(status) {
-  return status === "blocked" || status === "done" ? "●" : "·";
-}
 
 export function tone(t, status) {
   return t[status] ?? t.unknown;
@@ -88,6 +86,7 @@ export default class Spaces extends View {
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
+    this.repoOf = {}; // where() -> { repo, top }: a folder's repo never changes, so asked once
     this.pending = new Set(); // where()s to look at next
     this.busy = {}; // pane -> an agent working or a program in front of its shell
     this.ready = {}; // machine -> its layout was readable at the last look
@@ -100,9 +99,9 @@ export default class Spaces extends View {
     this.pressed = null;
     this.over = null;
     this.machines = [];
-    this.reconnecting = JSON.parse(localStorage.getItem("machines.reconnecting") ?? "{}");
+    this.reconnecting = stored("machines.reconnecting", {});
     for (const state of Object.values(this.reconnecting)) state.busy = false;
-    this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
+    this.folded = new Set(stored("machines.folded", []));
     this.refreshMachines(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     // `git status` walks the whole tree, on another machine a process there:
@@ -127,6 +126,12 @@ export default class Spaces extends View {
     const at = {};
     for (const s of sp) at[s.id] = where(s, ps);
     const keys = new Set(Object.values(at).filter((k) => JSON.parse(k)[1]));
+    // Places no space is in any more: forget them, so their repos stop being
+    // watched and a change there doesn't look at them again.
+    for (const k of Object.keys(this.git)) {
+      if (keys.has(k) || this.pending.has(k)) continue;
+      delete this.git[k]; delete this.checked[k]; delete this.repoOf[k]; this.unsure.delete(k);
+    }
     const due = new Set([...keys].filter((k) => !(k in this.git)));
     for (const [id, k] of Object.entries(at)) if (this.at[id] && this.at[id] !== k && keys.has(k)) due.add(k);
     this.at = at;
@@ -247,11 +252,16 @@ export default class Spaces extends View {
         return;
       }
       // The repo's own .git folder names it; a worktree's top differs from it.
-      const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd, on });
-      const common = await exec("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, on });
-      const repo = common.stdout.trim();
+      // One rev-parse for both, once per place (a folder doesn't change repos).
+      if (!this.repoOf[key]) {
+        const rp = await exec("git", ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"], { cwd, on });
+        const [top, repo] = rp.stdout.trim().split("\n");
+        if (rp.code !== 0 || !top || !repo) { this.unsure.add(key); this.git[key] ??= null; return; }
+        this.repoOf[key] = { top, repo };
+      }
+      const { top, repo } = this.repoOf[key];
       const name = repo.endsWith("/.git") ? base(repo.slice(0, -5)) : base(repo).replace(/\.git$/, "");
-      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top.stdout.trim()}/.git` };
+      const info = { name, branch: null, ahead: 0, behind: 0, repo: JSON.stringify([on, repo]), linked: repo !== `${top}/.git` };
       for (const line of r.stdout.split("\n")) {
         if (line.startsWith("# branch.head ")) info.branch = line.slice(14);
         else if (line.startsWith("# branch.ab ")) {
@@ -277,7 +287,8 @@ export default class Spaces extends View {
         while (this.watching.has(repo)) {
           await watchFolder(repo);
           const mine = JSON.stringify([null, repo]);
-          if (this.watching.has(repo)) this.refreshGit(Object.keys(this.git).filter((k) => this.git[k]?.repo === mine), cx);
+          const shown = new Set(Object.values(this.at));
+          if (this.watching.has(repo)) this.refreshGit(Object.keys(this.git).filter((k) => shown.has(k) && this.git[k]?.repo === mine), cx);
         }
       } catch { this.watching.delete(repo); }
     });
@@ -434,6 +445,7 @@ export default class Spaces extends View {
         this.over = w.id;
       })
       .on_mouse_move((_e, cx) => {
+        if (this.pressed === null) return;
         const source = spaces().find(s => s.id === this.pressed);
         const over = source && (source.machine ?? null) === (w.machine ?? null) ? w.id : null;
         if (this.pressed !== null && this.over !== over) {
@@ -523,8 +535,6 @@ export default class Spaces extends View {
     // Unnamed spaces keep the first letter they had (see letter()).
     const letters = Object.fromEntries(Object.entries(shared("space.letters") ?? {}).filter(([id]) => ids.has(id)));
     let lettersChanged = Object.keys(letters).length !== Object.keys(shared("space.letters") ?? {}).length;
-    // Letters set by hand, for spaces whose first name went unrecorded.
-    for (const [id, l] of Object.entries(LETTER_SEED)) if (ids.has(id) && !letters[id]) { letters[id] = l; lettersChanged = true; }
     for (const p of sp) {
       if (p.named || letters[p.id] || p.name === "~" || !p.name) continue;
       letters[p.id] = [...p.name][0].toUpperCase();

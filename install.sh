@@ -97,12 +97,38 @@ PY
     mkdir -p "$HOME/.grok"
     if [ -f "$CFG" ] && grep -q 'my-status/statusline.sh' "$CFG"; then
       say "Grok：已經設定過"
-    elif [ -f "$CFG" ] && grep -q '^\[ui\.status_line\]' "$CFG"; then
-      note "Grok：$CFG 已經有自己的 [ui.status_line]，沒有動它。要在 Herdr 底部顯示，把它的 command 改成："
+    # Its own status line: a [ui.status_line] table, or status_line set under [ui]
+    # (dotted or inline). Appending a table then would define the key twice.
+    elif [ -f "$CFG" ] && python3 - "$CFG" <<'PY'
+import re, sys
+table = None
+for line in open(sys.argv[1], encoding="utf-8"):
+    s = line.strip()
+    m = re.match(r"^\[\s*([^\]]+?)\s*\]", s)
+    if m:
+        table = re.sub(r'[\s"]', "", m.group(1))
+        if table == "ui.status_line":
+            sys.exit(0)
+        continue
+    if table == "ui" and re.match(r"^status_line\s*[.=]", s):
+        sys.exit(0)
+    if table is None and re.match(r"^ui\s*\.\s*status_line\b", s):
+        sys.exit(0)
+sys.exit(1)
+PY
+    then
+      note "Grok：$CFG 已經有自己的 status_line，沒有動它。要在 Herdr 底部顯示，把它的 command 改成："
       echo "      \"$SL sh -c '<原本的指令>'\""
     else
       backup "$CFG" "grok/config.toml"
-      printf '\n[ui.status_line]\ntype = "command"\ncommand = "%s"\n' "$SL" >> "$CFG"
+      # A TOML basic string: backslashes and quotes in the path escaped.
+      python3 - "$CFG" "$SL" <<'PY'
+import sys
+cfg, sl = sys.argv[1], sys.argv[2]
+q = '"' + sl.replace("\\", "\\\\").replace('"', '\\"') + '"'
+with open(cfg, "a", encoding="utf-8") as f:
+    f.write('\n[ui.status_line]\ntype = "command"\ncommand = ' + q + "\n")
+PY
       say "Grok：~/.grok/config.toml 加上 [ui.status_line]"
     fi
   fi

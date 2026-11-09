@@ -27,10 +27,11 @@ if [ $# -gt 0 ]; then
     exit
 fi
 
-dir=$(printf '%s' "$input" | jq -r '.workspace.current_dir // .cwd // ""')
-model=$(printf '%s' "$input" | jq -r '.model.display_name // "?"')
-effort=$(printf '%s' "$input" | jq -r '.effort.level // empty')
-left=$(printf '%s' "$input" | jq -r '.context_window.remaining_percentage // empty')
-line="${dir##*/} │ ${model}${effort:+@$effort}"
-[ -n "$left" ] && line="$line │ ctx ${left}%"
-printf '%s\n' "$line"
+# One jq for the whole line (this runs on every refresh).
+printf '%s' "$input" | jq -r '
+  ((.workspace.current_dir // .cwd // "") | split("/") | last // "") as $dir
+  | (.effort.level // "") as $effort
+  | .context_window.remaining_percentage as $left
+  | "\($dir) │ \(.model.display_name // "?")"
+    + (if $effort != "" then "@\($effort)" else "" end)
+    + (if $left != null then " │ ctx \($left)%" else "" end)'
