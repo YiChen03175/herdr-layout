@@ -161,7 +161,7 @@ export default class Agents extends View {
       if (!done && !blocked) continue;
       const who = a.program?.name || a.app || "Agent";
       const body = [a.space_name, a.title].filter(Boolean).join(" · ") || a.tab_name || "";
-      this.macNotify(done ? `${who} 完成了` : `${who} 需要你`, body);
+      this.macNotify(done ? `${who} 完成了` : `${who} 需要你`, body, a.address);
       posted++;
     }
     if (posted) cx.timer.after(TOAST_SETTLE, () => this.closeCornerNotes(posted));
@@ -188,9 +188,20 @@ export default class Agents extends View {
     }).catch(() => {});
   }
 
-  macNotify(title, body) {
-    const q = (x) => `"${String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-    exec("osascript", ["-e", `display notification ${q(body || " ")} with title "Herdr" subtitle ${q(title)}`]).catch(() => {});
+  // Through terminal-notifier: a click brings Herdr to the front and shows that
+  // agent. One notification per agent: a newer one replaces it. Without
+  // terminal-notifier, osascript (a click there opens Script Editor).
+  macNotify(title, body, address) {
+    const sh = (x) => `'${String(x).replace(/'/g, "'\\''")}'`;
+    const app = `${home()}/.local/bin/herdr-app`;
+    const onClick = `${sh(app)} do agent.focus --terminal ${sh(address)} >/dev/null 2>&1 || herdr-app do agent.focus --terminal ${sh(address)} >/dev/null 2>&1`;
+    exec("terminal-notifier", ["-title", "Herdr", "-subtitle", title, "-message", body || " ",
+      "-group", `herdr-${address}`, "-activate", "dev.herdr.app", "-execute", onClick])
+      .then((r) => { if (r.code !== 0) throw new Error(r.stderr); })
+      .catch(() => {
+        const q = (x) => `"${String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+        exec("osascript", ["-e", `display notification ${q(body || " ")} with title "Herdr" subtitle ${q(title)}`]).catch(() => {});
+      });
   }
 
 

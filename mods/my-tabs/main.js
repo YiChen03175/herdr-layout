@@ -41,7 +41,7 @@ function liveTitle(own) {
 // bands one width back, which looks the same (two redraws per sweep, only while
 // a tab in the shown space is working).
 const SHINE = { dim: "b3", icon: 0.55, sweep: 2000, band: 30, fade: 350 };
-// Below this tab bar width (layout px), Files and Changes show only their icons.
+// Below this tab bar width (layout px), GitLab, Files and Changes show only their icons.
 const PANEL_LABELS_MIN = 760;
 // The longest a tab's title gets (layout px), on a wide bar and below PANEL_LABELS_MIN.
 const TITLE_MAX = { wide: 170, narrow: 100 };
@@ -447,11 +447,12 @@ export default class Tabs extends View {
       ? (root.traffic_lights[0] + 64) / settings().zoom + 12
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
-    const enabled = shared("workspace.panels") ?? ["files", "changes"];
+    // Herdr's own panels (Settings can turn them off), plus mods/my-gitlab, always.
+    const enabled = [...(shared("workspace.panels") ?? ["files", "changes"]), "gitlab"];
     this.syncPanel(space, panel, body, enabled);
-    // Narrower than PANEL_LABELS_MIN, the Files and Changes buttons are just their icons.
+    // Narrower than PANEL_LABELS_MIN, the GitLab, Files and Changes buttons are just their icons.
     const iconOnly = (this.barW ?? Infinity) < PANEL_LABELS_MIN;
-    const panelButton = (id, label, icon) => {
+    const panelButton = (id, label, icon, count = 0) => {
       const on = panel && !panel.hidden && body?.active === id;
       return h_flex().id(`panel-${id}`).cursor_pointer().h(26).px(iconOnly ? 6 : 8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
@@ -461,6 +462,11 @@ export default class Tabs extends View {
           else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
         }).child(svg(icon).size(14))
         .when(!iconOnly, el => el.child(label))
+        // What waits on you (GitLab: MRs to review): a red count on the button's top right
+        // corner, like an app badge; the icon-only button too.
+        .when(count > 0, el => el.relative().child(div().absolute().top(-5).right(-6).min_w(15).h(15).px(4).rounded_full()
+          .flex().items_center().justify_center().bg(t.blocked).border(1.5).border_color(t.chrome)
+          .text_color("#ffffff").text_size(9.5).font_bold().child(count > 99 ? "99+" : String(count))))
         .when(iconOnly, el => el.tooltip(label));
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
@@ -481,6 +487,8 @@ export default class Tabs extends View {
         .when(more.length > 0, el => el.child(this.moreMenu(t, more, programOf, nameOf, stop)))
         )
       // New tabs start from the + at the top of the agents list (my-agents).
+      // GitLab first, then Herdr's own panels.
+      .child(panelButton("gitlab", "GitLab", "mods/my-gitlab/gitlab.svg", shared("my-gitlab.review") ?? 0))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))

@@ -8,7 +8,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 APP="${HERDR_HOME:-$HOME/.config/herdr-app}"
-MODS="my-agents my-chrome my-pane my-spaces my-status my-tabs"
+MODS="my-agents my-chrome my-gitlab my-pane my-spaces my-status my-tabs"
 LAYOUT="my-main"
 AGENTS=1
 
@@ -26,6 +26,8 @@ note() { printf '\033[33m!\033[0m %s\n' "$*"; }
 [ -d "$APP" ] || { echo "找不到 ${APP}：請先安裝 Herdr 並開啟一次。" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "需要 python3。" >&2; exit 1; }
 command -v jq >/dev/null || note "沒有 jq：狀態列交接需要它（brew install jq）。"
+command -v terminal-notifier >/dev/null || note "沒有 terminal-notifier：點通知跳回 agent 需要它（brew install terminal-notifier）。"
+command -v glab >/dev/null || note "沒有 glab：GitLab 面板需要它（brew install glab && glab auth login）。"
 
 BACKUP="$HOME/.config/herdr-app-backups/$(date +%Y%m%d-%H%M%S)"
 backup() { # backup <absolute path> <name in the backup>

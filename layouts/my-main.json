@@ -148,6 +148,13 @@
                           "content": {
                             "mod": "changes"
                           }
+                        },
+                        {
+                          "id": "gitlab",
+                          "type": "block",
+                          "content": {
+                            "mod": "my-gitlab"
+                          }
                         }
                       ],
                       "active": "files"
@@ -173,6 +180,19 @@
               },
               "size": {
                 "px": 28
+              }
+            },
+            {
+              "id": "gitlab-poll",
+              "type": "block",
+              "size": {
+                "px": 0
+              },
+              "content": {
+                "mod": "my-gitlab",
+                "props": {
+                  "headless": true
+                }
               }
             }
           ],
