@@ -2,21 +2,21 @@
 # Installs this layout into Herdr on this machine. Safe to run again: whatever
 # it replaces is copied to ~/.config/herdr-app-backups/<time>/ first.
 #
-#   ./install.sh               layout, mods, sounds, and the Claude Code / Grok status lines
-#   ./install.sh --no-agents   leave Claude Code's and Grok's settings alone
+#   ./install.sh               layout, mods, sounds and Claude Code's status line
+#   ./install.sh --no-claude   leave Claude Code's settings alone
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 APP="${HERDR_HOME:-$HOME/.config/herdr-app}"
 MODS="my-agents my-chrome my-gitlab my-pane my-spaces my-status my-tabs"
 LAYOUT="my-main"
-AGENTS=1
+CLAUDE=1
 
 for arg in "$@"; do
   case "$arg" in
-    --no-agents) AGENTS=0 ;;
     -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "不認得的參數：${arg}（可用 --no-agents）" >&2; exit 1 ;;
+    --no-claude|--no-agents) CLAUDE=0 ;;
+    *) echo "不認得的參數：${arg}" >&2; exit 1 ;;
   esac
 done
 
@@ -25,7 +25,7 @@ note() { printf '\033[33m!\033[0m %s\n' "$*"; }
 
 [ -d "$APP" ] || { echo "找不到 ${APP}：請先安裝 Herdr 並開啟一次。" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "需要 python3。" >&2; exit 1; }
-command -v jq >/dev/null || note "沒有 jq：狀態列交接需要它（brew install jq）。"
+command -v jq >/dev/null || note "沒有 jq：Claude Code 的 status line 需要它（brew install jq）。"
 command -v terminal-notifier >/dev/null || note "沒有 terminal-notifier：點通知跳回 agent 需要它（brew install terminal-notifier）。"
 command -v glab >/dev/null || note "沒有 glab：GitLab 面板需要它（brew install glab && glab auth login）。"
 
@@ -42,7 +42,6 @@ for m in $MODS; do
   rm -rf "$APP/mods/$m"
   cp -R "$REPO/mods/$m" "$APP/mods/$m"
 done
-chmod +x "$APP/mods/my-status/statusline.sh"
 say "mods：$MODS"
 
 mkdir -p "$APP/layouts" "$APP/sounds"
@@ -66,74 +65,31 @@ os.replace(tmp, path)
 PY
 say "提示音：sounds/done.mp3、sounds/blocked.mp3"
 
-# Claude Code and Grok: hand model, effort and context to the bottom bar inside Herdr.
-SL="$APP/mods/my-status/statusline.sh"
-if [ "$AGENTS" = 1 ]; then
-  if [ -d "$HOME/.claude" ] || command -v claude >/dev/null; then
-    mkdir -p "$HOME/.claude"
-    backup "$HOME/.claude/settings.json" "claude/settings.json"
-    python3 - "$HOME/.claude/settings.json" "$SL" <<'PY'
+# Claude Code's status line: model@effort and context left at the right edge
+# (the branch and worktree are on Herdr's bottom bar). Only statusLine changes.
+if [ "$CLAUDE" = 1 ] && { [ -d "$HOME/.claude" ] || command -v claude >/dev/null; }; then
+  mkdir -p "$HOME/.claude"
+  SL="$HOME/.claude/statusline-command.sh"
+  if ! cmp -s "$REPO/claude/statusline-command.sh" "$SL"; then
+    backup "$SL" "claude/statusline-command.sh"
+    cp "$REPO/claude/statusline-command.sh" "$SL"
+    chmod +x "$SL"
+  fi
+  backup "$HOME/.claude/settings.json" "claude/settings.json"
+  python3 - "$HOME/.claude/settings.json" "$SL" <<'PY'
 import json, os, shlex, sys
 path, sl = sys.argv[1], sys.argv[2]
 s = json.load(open(path)) if os.path.exists(path) else {}
-cur = s.get("statusLine") or {}
-old = cur.get("command") if cur.get("type") == "command" else None
-if old and "my-status/statusline.sh" in old:
-    print("  Claude Code 的 statusLine 已經設定過")
-    sys.exit(0)
-# An existing status line keeps showing outside Herdr.
-cmd = shlex.quote(sl) + (" sh -c " + shlex.quote(old) if old else "")
-s["statusLine"] = {**cur, "type": "command", "command": cmd}
-tmp = path + ".tmp"
-with open(tmp, "w") as f:
-    json.dump(s, f, indent=2, ensure_ascii=False)
-    f.write("\n")
-os.replace(tmp, path)
-print("  原本的 status line：" + (old or "（無）") + " → 在 Herdr 外照常顯示")
+want = {"type": "command", "command": "bash " + shlex.quote(sl)}
+if (s.get("statusLine") or {}).get("command") != want["command"]:
+    s["statusLine"] = {**(s.get("statusLine") or {}), **want}
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)
 PY
-    say "Claude Code：~/.claude/settings.json 的 statusLine"
-  fi
-
-  if [ -d "$HOME/.grok" ] || command -v grok >/dev/null; then
-    CFG="$HOME/.grok/config.toml"
-    mkdir -p "$HOME/.grok"
-    if [ -f "$CFG" ] && grep -q 'my-status/statusline.sh' "$CFG"; then
-      say "Grok：已經設定過"
-    # Its own status line: a [ui.status_line] table, or status_line set under [ui]
-    # (dotted or inline). Appending a table then would define the key twice.
-    elif [ -f "$CFG" ] && python3 - "$CFG" <<'PY'
-import re, sys
-table = None
-for line in open(sys.argv[1], encoding="utf-8"):
-    s = line.strip()
-    m = re.match(r"^\[\s*([^\]]+?)\s*\]", s)
-    if m:
-        table = re.sub(r'[\s"]', "", m.group(1))
-        if table == "ui.status_line":
-            sys.exit(0)
-        continue
-    if table == "ui" and re.match(r"^status_line\s*[.=]", s):
-        sys.exit(0)
-    if table is None and re.match(r"^ui\s*\.\s*status_line\b", s):
-        sys.exit(0)
-sys.exit(1)
-PY
-    then
-      note "Grok：$CFG 已經有自己的 status_line，沒有動它。要在 Herdr 底部顯示，把它的 command 改成："
-      echo "      \"$SL sh -c '<原本的指令>'\""
-    else
-      backup "$CFG" "grok/config.toml"
-      # A TOML basic string: backslashes and quotes in the path escaped.
-      python3 - "$CFG" "$SL" <<'PY'
-import sys
-cfg, sl = sys.argv[1], sys.argv[2]
-q = '"' + sl.replace("\\", "\\\\").replace('"', '\\"') + '"'
-with open(cfg, "a", encoding="utf-8") as f:
-    f.write('\n[ui.status_line]\ntype = "command"\ncommand = ' + q + "\n")
-PY
-      say "Grok：~/.grok/config.toml 加上 [ui.status_line]"
-    fi
-  fi
+  say "Claude Code：status line（~/.claude/statusline-command.sh）"
 fi
 
 # Switch to the layout when Herdr is running.
@@ -145,4 +101,3 @@ else
 fi
 
 [ -d "$BACKUP" ] && echo "被取代的檔案備份在 $BACKUP"
-echo "已經開著的 Claude Code / Grok 要重開，底部的模型與 ctx 才會出現。"

@@ -34,7 +34,11 @@
 **Pane 與底部狀態列（`my-pane`、`my-status`）**
 - Pane 標題列比較安靜：只有資料夾和 agent 狀態，加上 split、zoom、close 按鈕，高 26px。
 - 主畫面上下不留外框空白，只保留左右 4px。
-- 底部狀態列顯示機器、分支和 agent 數量。焦點在 Claude Code 或 Grok 時，右邊會顯示 **模型@思考程度** 和 **ctx 剩餘 %**；agent 自己的 status line 在 Herdr 裡會自動隱藏。
+- 底部狀態列顯示機器、目前焦點終端機的分支（有未 commit 的改動會加 `*`）、在 linked worktree 裡時的 worktree 名稱，以及 agent 數量（幾個需要你）。
+
+**Claude Code 的 status line（`claude/statusline-command.sh`）**
+- 左邊是資料夾和 GitHub repo，右邊貼齊是 **模型@思考程度** 和 **ctx 剩餘 %**（依剩餘量變綠／黃／紅）。
+- 視窗太窄時只截左邊（以「…」結尾），右邊永遠完整。分支和 worktree 在 Herdr 底部，這裡不重複。
 
 **提示音**
 - 完成和需要你都改成 macOS 內建 Glass 音效的前 0.4 秒，聲音短而清脆。
@@ -42,7 +46,7 @@
 ## 需要
 
 - macOS 上的 Herdr，而且至少開過一次，讓 `~/.config/herdr-app` 存在。
-- `python3`（Recap 和安裝程式會用到）、`jq`（status line 交接會用到）、`git`。
+- `python3`（Recap、通知圖示和安裝程式會用到）、`git`、`jq`（Claude Code 的 status line 會用到）。
 - 點通知跳回 agent 要 `terminal-notifier`（`brew install terminal-notifier`），第一次要在「系統設定 → 通知」允許它。
 - GitLab 面板要 [`glab`](https://gitlab.com/gitlab-org/cli) 並登入過（`brew install glab && glab auth login`）。
 
@@ -52,18 +56,17 @@
 git clone https://github.com/YiChen03175/herdr-layout.git
 cd herdr-layout
 ./install.sh               # 全部
-./install.sh --no-agents   # 不改 Claude Code / Grok 的設定
+./install.sh --no-claude   # 不改 Claude Code 的設定
 ```
 
 安裝程式會做這些事：
 
 1. 把 `mods/my-*` 複製到 `~/.config/herdr-app/mods/`，`layouts/my-main.json` 複製到 `layouts/`。
 2. 把提示音複製到 `~/.config/herdr-app/sounds/`，並在 `settings.json` 的 `sounds` 指定它們。其他設定不動。
-3. Claude Code：把 `~/.claude/settings.json` 的 `statusLine` 換成 `mods/my-status/statusline.sh`。原本已有 status line 的話會包在裡面，在 Herdr 外照常顯示。
-4. Grok：在 `~/.grok/config.toml` 加上 `[ui.status_line]`。如果你已經有自己的設定，安裝程式不會改它，只會告訴你要怎麼改。
-5. Herdr 有在執行的話，直接切換到 `my-main`。
+3. Claude Code：把 `claude/statusline-command.sh` 複製到 `~/.claude/`，並把 `~/.claude/settings.json` 的 `statusLine` 指向它。其他設定不動。
+4. Herdr 有在執行的話，直接切換到 `my-main`。
 
-被取代的檔案都會先備份到 `~/.config/herdr-app-backups/<時間>/`，重複執行也安全。已經開著的 Claude Code / Grok 要重開，底部的模型和 ctx 才會出現。
+Grok 的設定不會動。被取代的檔案都會先備份到 `~/.config/herdr-app-backups/<時間>/`，重複執行也安全。
 
 `zoom` 是每台螢幕各自的偏好，不會被複製。需要的話用 ⌘= / ⌘- 調整。
 
@@ -75,25 +78,25 @@ cd herdr-layout
 |---|---|
 | `my-agents` | 執行 `terminal-notifier` 發 macOS 通知（沒裝時用 `osascript`），點通知時執行 `herdr-app do agent.focus` 跳到那個 agent；執行 `herdr-app status` 確認右下角提示的數量再關掉；每 5 秒執行 `python3 recap.py`，讀取 `~/.claude/sessions/`、Claude Code 的對話紀錄，以及 `~/.grok/` 的 session，找出最新的 recap。不連網路。 |
 | `my-gitlab` | 執行 `glab api graphql` 讀取自己的 MR（開著的、7 天內 merge 的、要我 review 的）；確認視窗按下 Close 時，用 `mergeRequestUpdate` 把那個 MR 設成 closed；點擊時執行 `open <網址>`。 |
+| `my-status` | 對焦點終端機的資料夾執行 `git rev-parse`、`git diff-index`（找 worktree 和未 commit 的改動）；Herdr 在前景時每 5 秒一次。 |
 | `my-spaces` | 執行 `git`（status、rev-parse）讀取分支和 worktree；執行 `hc machine ls` 列出其他機器。 |
-| `my-status` | 讀取 `~/.config/herdr-app/data/my-status/agents/<終端機>.json`，由 `statusline.sh` 寫入。 |
 
 ## 已知限制
 
-- 右下角提示是用編號找出來關掉的（Herdr 設定裡沒有關閉它的選項）。如果剛好同一瞬間有其他彈出視窗打開，可能會關錯。
+- Herdr 沒有關掉右下角提示的選項，內建的 toast mod 也不能換，所以只能在它出現後馬上關掉：會閃一下（約 0.1 秒）。關的時候只關最新、連續的 toast，中間如果有選單打開就不關。
 - macOS 通知只會出現在主螢幕，也就是有選單列的那一台。
 - 錯誤類的提示（例如程式啟動失敗）仍然顯示在 Herdr 視窗內。
 
 ## 移除
 
-按 ⌘⇧L（`layout.switch`）切回 Herdr 的 main，再刪掉 `~/.config/herdr-app/mods/my-*` 和 `layouts/my-main.json`。Claude Code / Grok 的設定可以從備份資料夾還原。
+按 ⌘⇧L（`layout.switch`）切回 Herdr 的 main，再刪掉 `~/.config/herdr-app/mods/my-*` 和 `layouts/my-main.json`。
 
 ## 修改後同步回 repo
 
-在 Herdr 裡改完之後：
+在 Herdr 裡改完（或改了 `~/.claude/statusline-command.sh`）之後：
 
 ```sh
-./export.sh    # 把本機的 mods、layout、提示音複製回 repo
+./export.sh    # 把本機的 mods、layout、提示音、Claude Code status line 複製回 repo
 git diff       # 確認後 commit
 ```
 

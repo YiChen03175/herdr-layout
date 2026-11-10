@@ -3,7 +3,7 @@
 
 import { View, div, image, svg } from "gpui-kit";
 import { v_flex, h_flex, Popup } from "gpui-base";
-import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings, exec, appHome, home, notify } from "herdr";
+import { agents, terminals, panes, focused, spaces, run, theme, shared, setShared, setAgentOrder, openOverlay, closeOverlay, props, window, layout, settings, exec, hc, appHome, home, notify } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -53,8 +53,13 @@ const railSquare = (t, rowH, selected, hovered) => {
 // Recaps (Claude Code's and Grok's "while you were away" line): recap.py finds
 // each agent's latest one, until the person writes again. Checked every few
 // seconds; the agents write one a few minutes after a turn ends.
-const MAC_EVERY = 250;
-const TOAST_SETTLE = 150; // ms: Herdr has put its corner note up by then
+// How often agents' states are compared (in-process, cheap): the corner note
+// Herdr puts up shows until the next look closes it, so look often.
+const MAC_EVERY = 100;
+// Closing the note: tried at once, then this often while it hasn't shown yet,
+// for at most TOAST_TRIES tries.
+const TOAST_RETRY = 40;
+const TOAST_TRIES = 10;
 const RECAP_EVERY = 5000;
 const RECAP_EVERY_AWAY = 30000; // while the window isn't in front
 const RECAP_DELAY = 300; // how long the pointer rests on a row before the card opens
@@ -161,14 +166,16 @@ export default class Agents extends View {
       const done = a.status === "done";
       const blocked = a.status === "blocked" && !(win && a.focused);
       if (!done && !blocked) continue;
-      const cwd = panes().find((p) => p.pane === a.pane)?.cwd;
+      const status = done ? "Ready" : "Needs you", session = this.sessionTitle(a);
       // Another machine's folder can't be asked of git here: its name will do.
       const remote = a.address.includes("/");
-      this.repoName(remote ? null : cwd).then((repo) => this.macNotify(done ? "Ready" : "Needs you",
-        repo ?? (cwd ? folderName(cwd) : a.space_name), this.sessionTitle(a), a.address, a.program));
+      this.agentCwd(a).then(async (cwd) => {
+        const repo = (remote ? null : await this.repoName(cwd)) ?? (cwd ? folderName(cwd) : a.space_name);
+        this.macNotify(status, repo, session, a.address, a.program);
+      });
       posted++;
     }
-    if (posted) cx.timer.after(TOAST_SETTLE, () => this.closeCornerNotes(posted));
+    if (posted) this.closeCornerNotes(posted, cx);
   }
 
   // Herdr's corner notes can't be turned off (and the shipped toast mod can't be
@@ -177,19 +184,38 @@ export default class Agents extends View {
   // count, then close the newest ones before it. Only as many as the newest
   // overlays in a row are toasts: a menu opened in between stops it, so it
   // closes nothing rather than the menu.
-  closeCornerNotes(n) {
-    const probe = notify({ title: "", timeout: 1 });
-    closeOverlay(probe);
-    const last = Number(String(probe).replace(/^o/, ""));
-    if (!Number.isFinite(last)) return;
+  closeCornerNotes(n, cx) {
     const status = (bin) => exec(bin, ["status"], { timeout: 3000 });
-    status("herdr-app").catch(() => status(`${home()}/.local/bin/herdr-app`)).then((r) => {
-      let open = [];
-      try { open = JSON.parse(r?.stdout ?? "{}").overlays ?? []; } catch {}
-      let toasts = 0;
-      for (let i = open.length - 1; i >= 0 && open[i] === "toast"; i--) toasts++;
-      for (let k = 1; k <= Math.min(n, toasts); k++) closeOverlay(`o${last - k}`);
-    }).catch(() => {});
+    cx.spawn(async (cx) => {
+      let left = n;
+      for (let tries = 0; left > 0 && tries < TOAST_TRIES; tries++) {
+        if (tries) await cx.sleep(TOAST_RETRY);
+        const probe = notify({ title: "", timeout: 1 });
+        closeOverlay(probe);
+        const last = Number(String(probe).replace(/^o/, ""));
+        if (!Number.isFinite(last)) return;
+        let open = [];
+        try {
+          const r = await status("herdr-app").catch(() => status(`${home()}/.local/bin/herdr-app`));
+          open = JSON.parse(r?.stdout ?? "{}").overlays ?? [];
+        } catch { continue; }
+        let toasts = 0;
+        for (let i = open.length - 1; i >= 0 && open[i] === "toast"; i--) toasts++;
+        const now = Math.min(left, toasts);
+        for (let k = 1; k <= now; k++) closeOverlay(`o${last - k}`);
+        left -= now;
+      }
+    });
+  }
+
+  // Where the agent itself runs: its process's folder (herdr-core knows it), which
+  // can differ from the folder its pane's shell last reported; else the pane's.
+  async agentCwd(a) {
+    const paneCwd = panes().find((p) => p.pane === a.pane)?.cwd ?? null;
+    try {
+      const r = await hc(["get", a.address, "--json"]);
+      return (r.code === 0 && JSON.parse(r.stdout)?.foreground?.cwd) || paneCwd;
+    } catch { return paneCwd; }
   }
 
   // The repo a folder is in (a worktree: its main repo's name), or null outside one.
@@ -205,10 +231,16 @@ export default class Agents extends View {
 
   // The session's name as the agents list shows it: a tab someone named, else
   // what the agent calls it (Claude Code's session title); never a bare number.
+  // A tab name that is that title cut short ("herdr-layout 版面與…") gives way to
+  // the whole title.
   sessionTitle(a) {
     const tab = spaces().flatMap((s) => s.tabs).find((t) => t.id === a.tab);
-    const name = tab ? title(tab, leadPanes(panes()).get(a.tab)) : "";
-    return name && !/^\d+$/.test(name) ? name : clean(a.title) || a.tab_name || a.program?.name || "Agent";
+    const lead = leadPanes(panes()).get(a.tab);
+    const live = clean(lead?.title) || clean(a.title);
+    const name = tab ? title(tab, lead) : "";
+    const cut = name.endsWith("…") && live.startsWith(name.slice(0, -1).trimEnd());
+    if (name && !cut && !/^\d+$/.test(name)) return name;
+    return live || a.tab_name || a.program?.name || "Agent";
   }
 
   // The agent's icon on a tile, as a PNG for the notification (made once per
