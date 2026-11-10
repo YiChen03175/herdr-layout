@@ -74,6 +74,8 @@ function stored(key, fallback) {
 // Agents that write a recap (Claude Code, Grok): without one alive, recap.py has nothing to find.
 const RECAPS = (a) => a.app === "claude-code" || a.program?.key === "claude" || /^grok/.test(a.app ?? "") || a.program?.key === "grok";
 
+// A folder's last part ("~" for home).
+const folderName = (path) => (path.replace(/\/+$/, "") === home() ? "~" : path.replace(/\/+$/, "").split("/").pop() || path);
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
 function leadPanes(all) {
@@ -159,9 +161,11 @@ export default class Agents extends View {
       const done = a.status === "done";
       const blocked = a.status === "blocked" && !(win && a.focused);
       if (!done && !blocked) continue;
-      const who = a.program?.name || a.app || "Agent";
-      const body = [a.space_name, a.title].filter(Boolean).join(" · ") || a.tab_name || "";
-      this.macNotify(done ? `${who} 完成了` : `${who} 需要你`, body, a.address);
+      const cwd = panes().find((p) => p.pane === a.pane)?.cwd;
+      // Another machine's folder can't be asked of git here: its name will do.
+      const remote = a.address.includes("/");
+      this.repoName(remote ? null : cwd).then((repo) => this.macNotify(done ? "Ready" : "Needs you",
+        repo ?? (cwd ? folderName(cwd) : a.space_name), this.sessionTitle(a), a.address, a.program));
       posted++;
     }
     if (posted) cx.timer.after(TOAST_SETTLE, () => this.closeCornerNotes(posted));
@@ -188,19 +192,56 @@ export default class Agents extends View {
     }).catch(() => {});
   }
 
-  // Through terminal-notifier: a click brings Herdr to the front and shows that
-  // agent. One notification per agent: a newer one replaces it. Without
-  // terminal-notifier, osascript (a click there opens Script Editor).
-  macNotify(title, body, address) {
+  // The repo a folder is in (a worktree: its main repo's name), or null outside one.
+  async repoName(cwd) {
+    if (!cwd) return null;
+    try {
+      const r = await exec("git", ["-C", cwd, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: 3000 });
+      const common = r.code === 0 ? r.stdout.trim() : "";
+      if (!common) return null;
+      return common.endsWith("/.git") ? folderName(common.slice(0, -5)) : folderName(common).replace(/\.git$/, "");
+    } catch { return null; }
+  }
+
+  // The session's name as the agents list shows it: a tab someone named, else
+  // what the agent calls it (Claude Code's session title); never a bare number.
+  sessionTitle(a) {
+    const tab = spaces().flatMap((s) => s.tabs).find((t) => t.id === a.tab);
+    const name = tab ? title(tab, leadPanes(panes()).get(a.tab)) : "";
+    return name && !/^\d+$/.test(name) ? name : clean(a.title) || a.tab_name || a.program?.name || "Agent";
+  }
+
+  // The agent's icon on a tile, as a PNG for the notification (made once per
+  // program by notify_icon.py, kept in data/my-agents/notify-icons/); null without one.
+  notifyIcon(program) {
+    if (!program?.icon) return Promise.resolve(null);
+    this.notifyIcons ??= {};
+    const key = (program.key || "agent").replace(/[^\w.-]/g, "_");
+    const out = `${appHome()}/data/my-agents/notify-icons/${key}.png`;
+    return this.notifyIcons[key] ??= exec("python3", [`${appHome()}/mods/my-agents/notify_icon.py`,
+      `${appHome()}/${program.icon}`, program.tile || "#1c1d21", program.color || "#ffffff", out])
+      .then((r) => (r.code === 0 ? out : null), () => null)
+      .then((path) => { if (!path) delete this.notifyIcons[key]; return path; });
+  }
+
+  // A macOS notification through terminal-notifier, three lines: the status, the
+  // agent's repo (else its folder), the session; the agent's icon beside them. A click brings Herdr to the front
+  // on that agent. One per agent: a newer one replaces it. Without terminal-notifier,
+  // osascript (a click there opens Script Editor).
+  macNotify(status, repo, session, address, program) {
     const sh = (x) => `'${String(x).replace(/'/g, "'\\''")}'`;
     const app = `${home()}/.local/bin/herdr-app`;
     const onClick = `${sh(app)} do agent.focus --terminal ${sh(address)} >/dev/null 2>&1 || herdr-app do agent.focus --terminal ${sh(address)} >/dev/null 2>&1`;
-    exec("terminal-notifier", ["-title", "Herdr", "-subtitle", title, "-message", body || " ",
-      "-group", `herdr-${address}`, "-activate", "dev.herdr.app", "-execute", onClick])
+    // terminal-notifier reads a message starting with "[" specially: escape it.
+    const message = (session || " ").replace(/^\[/, "\\[");
+    this.notifyIcon(program).then((icon) => exec("terminal-notifier", ["-title", status,
+      ...(repo ? ["-subtitle", repo] : []), "-message", message,
+      "-group", `herdr-${address}`, "-activate", "dev.herdr.app", "-execute", onClick,
+      ...(icon ? ["-contentImage", icon] : [])]))
       .then((r) => { if (r.code !== 0) throw new Error(r.stderr); })
       .catch(() => {
         const q = (x) => `"${String(x).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
-        exec("osascript", ["-e", `display notification ${q(body || " ")} with title "Herdr" subtitle ${q(title)}`]).catch(() => {});
+        exec("osascript", ["-e", `display notification ${q(session || " ")} with title ${q(status)}${repo ? ` subtitle ${q(repo)}` : ""}`]).catch(() => {});
       });
   }
 

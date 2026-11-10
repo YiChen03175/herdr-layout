@@ -28,7 +28,7 @@
   - 子 agent 會以樹狀顯示在 parent 底下，可以收合。
   - 收合成窄欄時，用圖示動畫表示狀態：卡住會跳、工作中慢慢閃、閒置稍微變淡。
   - 滑鼠停在某列上會顯示 Recap 小卡，內容是 Claude Code / Grok 的「while you were away」摘要。
-- **Agent 完成或需要你時改成 macOS 系統通知**，並收掉 Herdr 視窗內右下角的提示。點通知會切回 Herdr 並跳到那個 agent（需要 `terminal-notifier`；沒裝的話改用 `osascript`，點了會打開「指令碼編寫程式」）。
+- **Agent 完成或需要你時改成 macOS 系統通知**，並收掉 Herdr 視窗內右下角的提示。通知三行依序是狀態（Ready／Needs you）、agent 所在的 repo（不在 repo 裡就是資料夾名稱）、session 名稱，旁邊附上 agent 的圖示（Claude Code、Grok…）。點通知會切回 Herdr 並跳到那個 agent（需要 `terminal-notifier`；沒裝的話改用 `osascript`，點了會打開「指令碼編寫程式」）。
 - 底部按鈕依序是 Commands（指令面板，展開時顯示快捷鍵）、Settings、Add machine。
 
 **Pane 與底部狀態列（`my-pane`、`my-status`）**
