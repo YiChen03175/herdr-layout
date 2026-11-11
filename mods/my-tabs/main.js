@@ -1,6 +1,22 @@
 import { View, div, svg, image } from "gpui-kit";
 import { h_flex, v_flex, HoverCard } from "gpui-base";
-import { spaces, panes, run, openOverlay, theme, window, shared, layout, settings } from "herdr";
+import { spaces, panes, agents, run, openOverlay, theme, window, shared, setShared, layout, settings } from "herdr";
+
+// Status after my-agents' verdicts (shared "agents.effective"): an agent that stopped
+// but is waiting on its shells still counts as working.
+const URGENCY = { blocked: 4, done: 3, working: 2, idle: 1 };
+const mostUrgent = (list) => list.reduce((m, s) => ((URGENCY[s] ?? 0) > (URGENCY[m] ?? 0) ? s : m), null);
+function liveSpaces() {
+  const all = spaces();
+  const over = shared("agents.effective");
+  if (!over || !Object.keys(over).length) return all;
+  const byTab = {};
+  for (const a of agents()) (byTab[a.tab] ??= []).push((a.status === "done" || a.status === "idle") && over[a.address] ? over[a.address] : a.status);
+  return all.map((w) => {
+    const tabs = w.tabs.map((c) => (byTab[c.id] ? { ...c, status: mostUrgent(byTab[c.id]) } : c));
+    return { ...w, tabs, status: mostUrgent(tabs.map((c) => c.status).filter(Boolean)) ?? w.status };
+  });
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -9,6 +25,45 @@ function find(node, id) {
     if (found) return found;
   }
   return null;
+}
+
+// The side panel (Files / Changes) slides open and shut: its width eases over
+// SLIDE_MS with a short burst of resizes, like the sidebar's rail (layout nodes
+// have no native transition). want: "files" | "changes" | null (closed).
+const SLIDE_MS = 240, PANEL_W = 368;
+const ease = (k) => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
+function panelNow() {
+  const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
+  return panel ? (panel.hidden ? null : body?.active ?? null) : undefined;
+}
+function slidePanel(view, want, cx) {
+  const now = panelNow();
+  if (now === undefined || (want ?? null) === now) return;
+  const id = (view.slide = (view.slide ?? 0) + 1);
+  const width = () => shared("panel.width") ?? PANEL_W;
+  if (want && now) { run("layout.select", { stack: "panel-body", child: want }); return; }
+  let from, to;
+  if (want) {
+    from = 0; to = width();
+    run("layout.select", { stack: "panel-body", child: want });
+    run("layout.resize", { id: "panel", px: 0 });
+    run("layout.show", { id: "panel" });
+  } else {
+    from = find(layout(), "panel")?.size?.px ?? width(); to = 0;
+    if (from > 0) setShared("panel.width", from);
+  }
+  const start = Date.now();
+  const step = (cx) => {
+    if (view.slide !== id) return; // a newer open/close took over
+    const k = Math.min(1, (Date.now() - start) / SLIDE_MS);
+    run("layout.resize", { id: "panel", px: Math.round((from + (to - from) * ease(k)) * 10) / 10 });
+    if (k < 1) cx.timer.after(16, step);
+    else {
+      if (!want) { run("layout.hide", { id: "panel" }); run("layout.resize", { id: "panel", px: width() }); }
+      view.slide = 0;
+    }
+  };
+  step(cx);
 }
 
 // #rrggbb plus an alpha byte; other forms pass through.
@@ -27,13 +82,9 @@ function liveTitle(tabId) {
   return title;
 }
 
-// Working tabs: dimmed title and icon, with a shine sweeping left to right
-// that wraps around: as it leaves on the right it comes back in on the left.
-// Native .loop() only swings there-and-back, so each sweep is a one-way linear
-// native transition of one title width, restarted every SHINE.sweep ms with the
-// bands one width back, which looks the same (two redraws per sweep, only while
-// a tab in the shown space is working).
-const SHINE = { dim: "b3", icon: 0.55, sweep: 2000, band: 30, fade: 350 };
+// Working tabs: the icon fades in and out slowly, like a working agent's
+// icon in the sidebar (my-agents' PULSE).
+const PULSE = { from: 0.35, to: 1, period: 2000, easing: "ease-in-out" };
 // Below this tab bar width (layout px), Files and Changes show only their icons.
 const PANEL_LABELS_MIN = 760;
 // The longest a tab's title gets (layout px), on a wide bar and below PANEL_LABELS_MIN.
@@ -46,31 +97,22 @@ const MORE_OPEN_MS = 120;
 const TAIL_ROOM = 16;
 // The shortest title worth squeezing a tab in for, before the +N.
 const SQUEEZE_MIN = 40;
-const SHINE_KICK = 30; // ms between parking a sweep and starting it
 // Tab order by urgency: higher goes left. idle, working and no agent are equal.
 const RANK = { blocked: 3, done: 2 };
-const anyWorking = () => spaces().some(s => s.active && s.tabs.some(c => c.status === "working"));
+// A tab that turned done moves only if it stays done this long (ms): my-agents may
+// be about to say the agent is just waiting on its shells.
+const DONE_SETTLE = 600;
 // Read: an agent tab you've seen since it finished (idle, not the shown tab) is a
 // little faded; one that finished unseen (done) stays at full strength.
 const READ = { dim: "a6", icon: 0.6 };
 // The shown tab's border: its title color, a little softer (alpha bytes).
-const ACTIVE_BORDER = { normal: "bf", working: "8c" };
+const ACTIVE_BORDER = "bf";
 
 export default class Tabs extends View {
   init(_props, cx) {
-    this.shine = 0;      // sweep number: a new one starts one width back
-    this.shineGo = false; // false: parked; true: moving one width right
-    this.labelWidths = {}; // tab id -> title width, layout px
-    this.shineRunning = false; // a chain of sweeps is going
-    this.shineFirst = {};  // working tab id -> the sweep it joins at (fading in)
-    // Sweeps chain one after another while something works; a light check
-    // (no redraw) starts the chain within 200 ms of a tab starting to work,
-    // instead of waiting out a whole period with the shine parked.
-    cx.timer.every(200, (cx) => {
-      if (!this.shineRunning && anyWorking()) this.startSweep(cx);
-      this.reorder(cx);
-    });
+    cx.timer.every(200, (cx) => this.reorder(cx));
     this.ranks = {};      // tab id -> its last rank, to see what just got more urgent
+    this.doneSince = {};  // tab id -> when it turned done, until it has settled
     this.flip = null;     // { ids, offsets, applied, until }: a reorder sliding into place
     this.flipAt = 0;      // when the last reorder slid, for its longer transition
     // A title change alone doesn't redraw mods: look once a second, redraw only on a change.
@@ -84,35 +126,41 @@ export default class Tabs extends View {
     this.gen = 0;         // bumped when a reorder lands, so tabs don't slide back
     this.widths = {};     // tab id -> width, window px
     this.numbers = JSON.parse(localStorage.getItem("numbers") ?? "{}"); // unnamed tab id -> its number
-    this.panels = JSON.parse(localStorage.getItem("panels") ?? "{}");
+    this.panels = JSON.parse(localStorage.getItem("tabPanels") ?? "{}"); // tab id -> "files" | "changes" | null
+    this.slide = 0; this.panelPending = null;
   }
 
-  // The side panel is remembered per space: switching shows that space's choice
-  // (closed if it never had one), and opening or closing it records it.
-  syncPanel(space, panel, body, enabled) {
-    if (!space || !panel) return;
+  // The side panel is remembered per tab (each tab is one session): switching tabs
+  // slides to that tab's choice (closed if it never had one), and opening or closing
+  // it records it. Width is shared by all tabs.
+  syncPanel(space, panel, body, enabled, cx) {
+    const tab = space?.tabs?.find(c => c.active);
+    if (!tab || !panel) return;
     const now = panel.hidden ? null : body?.active ?? null;
-    if (space.id !== this.space) {
-      const first = this.space === undefined;
-      this.space = space.id; this.pending = null;
-      if (!(first && !(space.id in this.panels))) {
-        const stored = this.panels[space.id] ?? null, want = enabled.includes(stored) ? stored : null;
+    if (this.slide) return; // mid-slide sizes aren't choices
+    if (!panel.hidden && (panel.size?.px ?? 0) >= 120 && panel.size.px !== shared("panel.width")) setShared("panel.width", panel.size.px);
+    if (tab.id !== this.tab) {
+      const first = this.tab === undefined;
+      this.tab = tab.id; this.panelPending = null;
+      if (!(first && !(tab.id in this.panels))) {
+        const stored = this.panels[tab.id] ?? null, want = enabled.includes(stored) ? stored : null;
         if (want !== now) {
-          this.pending = { want, until: Date.now() + 1000 };
-          if (want) { run("layout.select", { stack: "panel-body", child: want }); run("layout.show", { id: "panel" }); }
-          else run("layout.hide", { id: "panel" });
+          this.panelPending = { want, until: Date.now() + 1000 };
+          slidePanel(this, want, cx);
           return;
         }
       }
     }
     // Until the restore lands (or something else won), the old state isn't a choice.
-    if (this.pending) {
-      if (this.pending.want !== now && Date.now() < this.pending.until) return;
-      this.pending = null;
+    if (this.panelPending) {
+      if (this.panelPending.want !== now && Date.now() < this.panelPending.until) return;
+      this.panelPending = null;
     }
-    if (this.panels[space.id] === now) return;
-    this.panels[space.id] = now;
-    localStorage.setItem("panels", JSON.stringify(this.panels));
+    if (this.panels[tab.id] === now) return;
+    this.panels[tab.id] = now;
+    const live = new Set(spaces().flatMap(p => p.tabs.map(c => c.id)));
+    if (live.size) for (const id of Object.keys(this.panels)) if (!live.has(id)) delete this.panels[id];
+    localStorage.setItem("tabPanels", JSON.stringify(this.panels));
   }
 
   // An unnamed tab keeps the number it first showed (its place then, or the next free one),
@@ -198,10 +246,15 @@ export default class Tabs extends View {
   reorder(cx) {
     if (this.drag?.active || this.pending || this.flip) return;
     const rank = (c) => RANK[c.status] ?? 1;
-    for (const space of spaces()) {
+    for (const space of liveSpaces()) {
       const ids = space.tabs.map(c => c.id);
       for (const [i, c] of space.tabs.entries()) {
         const was = this.ranks[c.id], now = rank(c);
+        if (now === RANK.done && was !== undefined && was < now) {
+          this.doneSince[c.id] ??= Date.now();
+          if (Date.now() - this.doneSince[c.id] < DONE_SETTLE) continue;
+        }
+        delete this.doneSince[c.id];
         this.ranks[c.id] = now;
         if (was === undefined || now <= was) continue;
         let j = ids.indexOf(c.id);
@@ -228,60 +281,14 @@ export default class Tabs extends View {
     }
   }
 
-  // One sweep: park the bands one width back, start them a moment later, and
-  // chain the next sweep while anything still works.
-  startSweep(cx) {
-    this.shineRunning = true;
-    this.shine++; this.shineGo = false; cx.notify();
-    cx.timer.after(SHINE_KICK, (cx) => { this.shineGo = true; cx.notify(); });
-    cx.timer.after(SHINE.sweep, (cx) => {
-      if (anyWorking()) this.startSweep(cx);
-      else { this.shineRunning = false; this.shineGo = false; cx.notify(); }
-    });
-  }
-
-  // The tab's title. Working: the text is dimmed, and a bright copy of it shows
-  // through moving windows, each
-  // counter-shifted so the copy stays on top of the dim text: only the glyphs shine.
+  // The tab's title; read is a little faded (working pulses only the icon).
   title(c, text, working, read, t) {
     const base = c.active ? t.foreground : t.muted;
-    const z = settings().zoom || 1, lw = this.labelWidths[c.id];
     // A narrow bar (where Files and Changes go to icons) gives each title less room.
     // The last tab before +N can be squeezed to fill what's left of the strip.
-    const label = div().id(`title-${c.id}`).max_w(this.squeeze?.id === c.id ? this.squeeze.title : this.titleMax()).truncate()
-      .text_color(working ? alpha(base, SHINE.dim) : read ? alpha(base, READ.dim) : base)
-      .on_size_change((size, cx) => {
-        const w = size.width / z;
-        if (Math.abs((this.labelWidths[c.id] ?? 0) - w) > 0.5) { this.labelWidths[c.id] = w; cx.notify(); }
-      })
+    return div().id(`title-${c.id}`).max_w(this.squeeze?.id === c.id ? this.squeeze.title : this.titleMax()).truncate()
+      .text_color(read ? alpha(base, READ.dim) : base)
       .child(text);
-    if (!working) delete this.shineFirst[c.id];
-    if (!working || !lw) return div().relative().child(label);
-    // A tab joins at a sweep it sees parked (so the move is animated, not
-    // already at its end): this one if it's parked now, else the next.
-    if (!(c.id in this.shineFirst)) this.shineFirst[c.id] = this.shineRunning && !this.shineGo ? this.shine : this.shine + 1;
-    const first = this.shineFirst[c.id];
-    if (this.shine < first) return div().relative().child(label);
-    // Bands one width apart (-1, 0, +1), all moving one width right per sweep:
-    // the set looks the same at the start and the end, so the restart is seamless.
-    // On the tab's first sweep there's no +1 (nothing to leave on the right) and
-    // the 0 band, starting on the left edge, fades in rather than popping up.
-    const joining = this.shine === first;
-    const shift = this.shineGo ? lw : 0;
-    const motion = { duration: SHINE.sweep - SHINE_KICK, easing: "linear" };
-    const band = (key, k, width, color) => {
-      const x = k * lw + shift - width / 2;
-      const id = `shine-${key}${k}-${c.id}-${this.shine}`;
-      return div().id(id).absolute().top(0).h_full().w(width).overflow_hidden()
-        .left(x).transition("left", motion)
-        .when(joining && k === 0, el => el.opacity(this.shineGo ? 1 : 0).transition("opacity", { duration: SHINE.fade, easing: "ease-out" }))
-        .child(div().id(`${id}-text`).absolute().top(0).w(lw).truncate().text_color(color)
-          .left(-x).transition("left", motion).child(text));
-    };
-    // One layer, in the shown tab's title color: stacking copies thickens the
-    // glyph edges and reads brighter than the real text.
-    const bands = (joining ? [-1, 0] : [-1, 0, 1]).map(k => band("b", k, SHINE.band, t.foreground));
-    return div().relative().child(label).children(bands);
   }
 
   // The longest a title gets now (layout px).
@@ -348,9 +355,9 @@ export default class Tabs extends View {
         .children(more.map(row)));
   }
 
-  render() {
+  render(cx) {
     const t = theme();
-    const space = spaces().find(p => p.active);
+    const space = liveSpaces().find(p => p.active);
     const all = space?.tabs ?? [];
     if (this.pending && all.map(c => c.id).join() === this.pending.ids.join()) { this.pending = null; this.gen++; }
     // The tabs that fit; the rest go in the +N menu at the end of the strip.
@@ -381,12 +388,12 @@ export default class Tabs extends View {
     const item = (c, i) => {
       const program = programOf(c);
       const name = nameOf(c, program);
-      // working looks calm too: no fill, the shine says it's busy.
+      // working looks calm too: no fill, the pulse says it's busy.
       const calm = c.status !== "blocked";
       const working = c.status === "working";
       const read = c.status === "idle" && !c.active;
-      // The shown tab's border is its title's color (dimmed with it while working).
-      const activeBorder = alpha(t.foreground, working ? ACTIVE_BORDER.working : ACTIVE_BORDER.normal);
+      // The shown tab's border is its title's color, a little softer.
+      const activeBorder = alpha(t.foreground, ACTIVE_BORDER);
       return h_flex().id(`tab-${c.id}-${this.gen}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         .border(1).text_color(c.active ? t.foreground : t.muted)
         // idle / done / working (or no agent): outline only, filled on hover.
@@ -409,15 +416,21 @@ export default class Tabs extends View {
         .when(lifted === i, el => el.bg(t.raised).border_color(t.input).shadow_md())
         .on_mouse_down("left", (e, cx) => {
           cx.stop_propagation();
-          if (e.click_count === 2) { this.drag = null; run("tab.rename", { id: c.id }); return; }
+          if (e.click_count === 2) {
+            this.drag = null;
+            const term = panes().find((p) => p.tab === c.id && p.program?.agent) ?? panes().find((p) => p.tab === c.id && p.terminal);
+            openOverlay({ mod: "my-rename", kind: "dialog", width: 420, height: 210,
+              props: { title: "Rename tab", value: name, terminal: term?.terminal ?? null, command: { name: "tab.rename", args: { id: c.id } } } });
+            return;
+          }
           // Pointer units vs measured widths (they can differ under zoom): calibrate on the press.
           const w = this.widths[c.id], k = w && e.bounds?.width ? w / e.bounds.width : 1;
           this.drag = { id: c.id, from: i, to: i, x0: e.position.x, k, dx: 0, active: false };
         })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "my-menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
         .when(Boolean(program?.icon), el => el.child((program.tint ? svg(program.icon).size(14).text_color(c.active ? t.foreground : t.muted) : image(program.icon).size(14))
-          // The shown tab's icon stays bright, working or not.
-          .when(!c.active && (working || read), el => el.opacity(working ? SHINE.icon : READ.icon))
+          .when(working, el => el.loop("opacity", PULSE))
+          .when(!working && read, el => el.opacity(READ.icon))
           // blocked or unread (done): the icon hops in place, asking for you (native loop, no timer).
           .when(c.status === "blocked" || c.status === "done", el => el.relative().loop("top", { from: 0, to: -3.5, period: 700, easing: "ease-in-out" }))))
         .child(this.title(c, c.zoomed ? `${name} Z` : name, working, read, t));
@@ -430,7 +443,7 @@ export default class Tabs extends View {
       : 10;
     const panel = find(root, "panel"), body = find(root, "panel-body");
     const enabled = shared("workspace.panels") ?? ["files", "changes"];
-    this.syncPanel(space, panel, body, enabled);
+    this.syncPanel(space, panel, body, enabled, cx);
     // Narrower than PANEL_LABELS_MIN, the Files and Changes buttons are just their icons.
     const iconOnly = (this.barW ?? Infinity) < PANEL_LABELS_MIN;
     const panelButton = (id, label, icon) => {
@@ -438,10 +451,7 @@ export default class Tabs extends View {
       return h_flex().id(`panel-${id}`).cursor_pointer().h(26).px(iconOnly ? 6 : 8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click(() => {
-          if (on) run("layout.hide", { id: "panel" });
-          else { run("layout.select", { stack: "panel-body", child: id }); run("layout.show", { id: "panel" }); }
-        }).child(svg(icon).size(14))
+        .on_click((_e, cx) => slidePanel(this, on ? null : id, cx)).child(svg(icon).size(14))
         .when(!iconOnly, el => el.child(label))
         .when(iconOnly, el => el.tooltip(label));
     };

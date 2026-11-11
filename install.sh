@@ -8,7 +8,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 APP="${HERDR_HOME:-$HOME/.config/herdr-app}"
-MODS="my-agents my-chrome my-pane my-spaces my-status my-tabs"
+MODS="my-agents my-chrome my-confirm my-files my-menu my-pane my-rename my-spaces my-status my-tabs"
 LAYOUT="my-main"
 AGENTS=1
 
@@ -64,7 +64,7 @@ os.replace(tmp, path)
 PY
 say "提示音：sounds/done.mp3、sounds/blocked.mp3"
 
-# Claude Code and Grok: hand model, effort and context to the bottom bar inside Herdr.
+# Claude Code and Grok: a status line with model@effort and context left.
 SL="$APP/mods/my-status/statusline.sh"
 if [ "$AGENTS" = 1 ]; then
   if [ -d "$HOME/.claude" ] || command -v claude >/dev/null; then
@@ -79,7 +79,7 @@ old = cur.get("command") if cur.get("type") == "command" else None
 if old and "my-status/statusline.sh" in old:
     print("  Claude Code 的 statusLine 已經設定過")
     sys.exit(0)
-# An existing status line keeps showing outside Herdr.
+# An existing status line keeps showing (statusline.sh runs it).
 cmd = shlex.quote(sl) + (" sh -c " + shlex.quote(old) if old else "")
 s["statusLine"] = {**cur, "type": "command", "command": cmd}
 tmp = path + ".tmp"
@@ -87,7 +87,7 @@ with open(tmp, "w") as f:
     json.dump(s, f, indent=2, ensure_ascii=False)
     f.write("\n")
 os.replace(tmp, path)
-print("  原本的 status line：" + (old or "（無）") + " → 在 Herdr 外照常顯示")
+print("  原本的 status line：" + (old or "（無）") + " → 照常顯示")
 PY
     say "Claude Code：~/.claude/settings.json 的 statusLine"
   fi
@@ -98,7 +98,7 @@ PY
     if [ -f "$CFG" ] && grep -q 'my-status/statusline.sh' "$CFG"; then
       say "Grok：已經設定過"
     elif [ -f "$CFG" ] && grep -q '^\[ui\.status_line\]' "$CFG"; then
-      note "Grok：$CFG 已經有自己的 [ui.status_line]，沒有動它。要在 Herdr 底部顯示，把它的 command 改成："
+      note "Grok：$CFG 已經有自己的 [ui.status_line]，沒有動它。要用這裡的 status line，把它的 command 改成："
       echo "      \"$SL sh -c '<原本的指令>'\""
     else
       backup "$CFG" "grok/config.toml"

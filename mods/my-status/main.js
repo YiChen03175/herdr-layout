@@ -1,53 +1,84 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, agents, focused, theme, readTextFile, appHome } from "herdr";
+import { spaces, agents, theme, readTextFile, appHome, exec, shared } from "herdr";
 
-// Claude Code's and Grok's status lines (statusline.sh in this folder, or one
-// that does the same), inside Herdr, print nothing and write
-// {model, effort, remaining, at} here per terminal.
-const AGENT_DIR = () => `${appHome()}/data/my-status/agents`;
-const REPORTS = (a) => a.app === "claude-code" || a.program?.key === "claude" || /^grok/.test(a.app ?? "") || a.program?.key === "grok";
-const READ_EVERY = 1000;
+// The Claude plan's usage, from usage.py (a clean, model-free Claude Code that
+// answers what /usage shows). Its last answer is kept in usage.json, so the
+// bar has numbers as soon as the app starts.
+const USAGE_FILE = () => `${appHome()}/data/my-status/usage.json`;
+const USAGE_EVERY = 5 * 60 * 1000;
+const METERS = [["fable", "Fable", "Fable 本週用量"], ["week", "週", "本週用量（全部模型）"], ["five_hour", "5h", "5 小時用量"]];
+const BAR_W = 64;
+const BAR_H = 14;
+const TRACK = 0.5;   // the empty part
+const SOFT = 0.6;    // the week's fill
+const BRIGHT = 1;    // Fable, alone and as its part of the week
+const HOT = 90; // percent from which a bar turns the "needs you" colour
+
+const pad = (n) => String(n).padStart(2, "0");
+const when = (ts) => {
+  const d = new Date(ts * 1000);
+  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
 
 export default class WorkspaceStatus extends View {
   init(_props, cx) {
-    this.claude = null; // {term, model, effort, remaining}
-    this.read(cx);
-    cx.timer.every(READ_EVERY, (cx) => this.read(cx));
+    this.usage = null; // {five_hour, week, fable, at}; each window {pct, resets} or null
+    readTextFile(USAGE_FILE()).then((text) => this.take(text, cx));
+    this.fetch(cx);
+    cx.timer.every(USAGE_EVERY, (cx) => this.fetch(cx));
   }
 
-  // The focused terminal's agent line, when it's an agent that writes one.
-  read(cx) {
-    const term = focused()?.terminal;
-    const a = term && agents().find((x) => x.address === term);
-    if (!a || !REPORTS(a)) {
-      if (this.claude) { this.claude = null; cx.notify(); }
-      return;
-    }
-    readTextFile(`${AGENT_DIR()}/${term}.json`).then((text) => {
-      let d = null;
-      try { d = text ? JSON.parse(text) : null; } catch {}
-      const next = d ? { term, model: d.model, effort: d.effort, remaining: d.remaining } : null;
-      if (JSON.stringify(next) !== JSON.stringify(this.claude)) { this.claude = next; cx.notify(); }
-    });
+  take(text, cx) {
+    try {
+      const d = text ? JSON.parse(text) : null;
+      if (d && JSON.stringify(d) !== JSON.stringify(this.usage)) { this.usage = d; cx.notify(); }
+    } catch {}
+  }
+
+  // A failed run keeps the last numbers.
+  fetch(cx) {
+    exec("python3", [`${appHome()}/mods/my-status/usage.py`], { timeout: 60000 })
+      .then((r) => { if (r.code === 0) this.take(r.stdout, cx); })
+      .catch(() => {});
+  }
+
+  // A pill with the percent inside; a window without data isn't shown. As on
+  // claude.ai, the week's fill starts with Fable's part of it, in Fable's colour.
+  meter(t, [key, label, name]) {
+    const w = this.usage?.[key];
+    const width = (p) => Math.max(BAR_H, BAR_W * Math.max(0, Math.min(100, p)) / 100);
+    const hot = w.pct >= HOT;
+    const part = key === "week" && w.fable > 0 ? w.fable : null;
+    const tip = `${name} ${Math.round(w.pct)}%`
+      + (part != null ? `（Fable 佔 ${Math.round(part)}%）` : "")
+      + (w.cap != null ? `，最多可用每週上限的 ${w.cap}%` : "")
+      + (w.resets ? `，${when(w.resets)} 重置` : "");
+    const fill = (p, color, alpha) => div().absolute().top(0).left(0).h_full().w(width(p)).rounded_full().bg(color).opacity(alpha);
+    return h_flex().gap(6).items_center().tooltip(tip)
+      .child(div().child(label))
+      .child(div().relative().w(BAR_W).h(BAR_H).rounded_full().overflow_hidden()
+        .child(div().absolute().inset_0().rounded_full().bg(t.dim).opacity(TRACK))
+        .when(w.pct > 0, el => el.child(fill(w.pct, hot ? t.blocked : t.accent, key === "fable" ? BRIGHT : SOFT)))
+        .when(part != null, el => el.child(fill(part, t.accent, BRIGHT)))
+        .child(h_flex().absolute().inset_0().items_center().justify_end().pr(6)
+          .text_size(9.5).font_weight(600).text_color(t.foreground).child(`${Math.round(w.pct)}`)));
   }
 
   render() {
     const t = theme();
     const space = spaces().find(s => s.active);
     const list = agents();
-    const needs = list.filter(a => a.status === "blocked").length;
+    const over = shared("agents.effective") ?? {};
+    const needs = list.filter(a => a.status === "blocked" || ((a.status === "done" || a.status === "idle") && over[a.address] === "blocked")).length;
     const label = (icon, text) => h_flex().gap(6).items_center().child(svg(`mods/workspace-chrome/${icon}.svg`).size(13)).child(text);
-    const c = this.claude && this.claude.term === focused()?.terminal ? this.claude : null;
-    const left = c?.remaining;
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(space?.branch), el => el.child(label("branch", space.branch)))
       .child(h_flex().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`)
         .when(needs > 0, el => el.child(div().text_color(t.blocked).child(`· ${needs} needs you`))))
       .child(div().flex_1())
-      .when(Boolean(c?.model), el => el.child(h_flex().gap(10).items_center()
-        .child(div().child(c.effort ? `${c.model}@${c.effort}` : c.model))
-        .when(left != null, el => el.child(div().child(`ctx ${Math.round(left)}%`)))));
+      .when(Boolean(this.usage), el => el.child(h_flex().gap(14).items_center()
+        .children(METERS.filter(([key]) => this.usage[key]).map((m) => this.meter(t, m)))));
   }
 }

@@ -56,8 +56,22 @@ const railSquare = (t, rowH, selected, hovered) => {
 const MAC_EVERY = 250;
 const TOAST_SETTLE = 150; // ms: Herdr has put its corner note up by then
 const RECAP_EVERY = 5000;
+// decide.py judges agents that stopped with shells still open. Its verdict is the
+// status every mod shows (shared "agents.effective"): waiting stays working. An agent
+// that just stopped stays working until the verdict, so a pause never flashes done.
+const DECIDE_EVERY = 4000;
+const DECIDE_HOLD = 5000; // ms: never wait longer than this for a verdict
 const RECAP_DELAY = 300; // how long the pointer rests on a row before the card opens
+// A terminal swallows mouse moves, so a pointer that leaves for one never reports leaving
+// here: while something is hovered, compare the pointer with its bounds instead.
+const HOVER_POLL = 80;
 const RECAP_W = 300;
+const CARD_LINE_H = 12.5 * 1.5; // one line of a card's text
+// Idle this long, an agent moves to Archived at the list's bottom (right-click: by hand).
+const ARCHIVE_AFTER = 6 * 3600000;
+// Archived shows its newest few; a button above them unfolds the rest upward.
+const ARCHIVE_SHOWN = 3;
+const ROW_H = 30 + 2, SUB_H = 26; // a row with its half gaps; a sub-agent row
 // Popups from the sidebar (the + menu, a recap) open just clear of its edge, their
 // top a little above where the pointer is, so the first line reads level with it.
 // Near the bottom the app keeps them inside the window.
@@ -115,6 +129,32 @@ function duration(ms) {
   return h < 24 ? `${h}h` : `${Math.floor(h / 24)}d`;
 }
 
+// Claude Code agents show Clawd acting out the status instead of the icon (idle
+// keeps the icon). GIFs from clawd-tank, clawd-pet and clawd-on-desk (see clawd.LICENSE): 36 px,
+// a few frames, 4-8 fps, so they cost little to draw.
+// Each as a GIF and as its frames (clawd-<status>/NN.png, `ms` apart).
+const CLAWD = {
+  working: { frames: 32, ms: 120 },
+  blocked: { frames: 20, ms: 120 },
+  done: { frames: 23, ms: 140 },
+};
+const clawdOf = (a) => (a.program?.key === "claude" && CLAWD[a.status] ? a.status : null);
+// Changing between them (or back to the icon): the old one fades out, the new one in.
+const PIC_FADE = { duration: 140, easing: "ease-in-out" };
+// Herdr doesn't play GIFs while its window isn't in front (other drawing goes on).
+// There the list shows the frame for the time instead, redrawn this often, only
+// while a Clawd is shown; in front, the GIF plays natively and nothing ticks.
+const GIF_TICK = 120;
+const pad2 = (n) => String(n).padStart(2, "0");
+// Clawd fills less of its square than the icon: drawn bigger, in the icon's footprint.
+const clawdPic = (name, size) => {
+  const c = CLAWD[name];
+  const src = window().active
+    ? `mods/my-agents/clawd-${name}.gif`
+    : `mods/my-agents/clawd-${name}/${pad2(Math.floor(Date.now() / c.ms) % c.frames)}.png`;
+  return image(src).w(size + 4).h(size + 4).m(-2).flex_none();
+};
+
 // The agent's icon from the app's program table: a one-color glyph or a picture.
 function icon(p, size, color) {
   if (!p?.icon) return null;
@@ -123,7 +163,7 @@ function icon(p, size, color) {
 
 export default class Agents extends View {
   init(_props, cx) {
-    if (props()?.sortMenu) return;
+    if (props()?.sortMenu || props()?.agentMenu) return;
     this.folded = new Set();
     // Each agent's last state and when it changed (ms), kept across restarts.
     this.changed = JSON.parse(localStorage.getItem("changed") ?? "{}");
@@ -131,11 +171,26 @@ export default class Agents extends View {
     if (!this.pendingPins.length) localStorage.removeItem("pins");
     this.migratingPins = new Set();
     cx.timer.every(30000, (cx) => cx.notify());
+    this.preloadFrames = true;
+    cx.timer.after(5000, (cx) => { this.preloadFrames = false; cx.notify(); });
+    // In the back: the next frame. Coming to the front: back to the GIF once.
+    cx.timer.every(GIF_TICK, (cx) => {
+      const active = window().active;
+      if (this.gifs > 0 && (!active || this.wasActive === false)) cx.notify();
+      this.wasActive = active;
+    });
     this.recaps = {};
     // Recaps already read (opened by a click on their row), so their dot stays gone.
     this.seenRecaps = JSON.parse(localStorage.getItem("seenRecaps") ?? "{}");
     this.refreshRecaps(cx);
     cx.timer.every(RECAP_EVERY, (cx) => this.refreshRecaps(cx));
+    cx.timer.every(HOVER_POLL, (cx) => this.checkHover(cx));
+    // Carried over a reload: starting empty would show every waiting agent as done.
+    this.decisions = { ...(shared("agents.effective") ?? {}) };
+    this.holds = {};
+    this.decidedAt = 0;
+    this.refreshDecisions(cx);
+    cx.timer.every(DECIDE_EVERY, (cx) => this.refreshDecisions(cx));
     this.macStatus = null;
     cx.timer.every(MAC_EVERY, (cx) => this.macAlerts(cx));
   }
@@ -145,16 +200,20 @@ export default class Agents extends View {
   // aren't on it, post one to Notification Center and close the note Herdr
   // just put in the window's corner.
   macAlerts(cx) {
-    const list = agents();
+    const nativeBefore = this.nativeStatus;
+    const { closing, released } = this.holdStops(cx, agents());
+    const list = this.effective(agents());
     const prev = this.macStatus;
     this.macStatus = Object.fromEntries(list.map((a) => [a.address, a.status]));
     if (!prev) return; // nothing to compare on the first look
     const win = window().active;
-    let posted = 0;
+    let posted = closing;
     for (const a of list) {
       const was = prev[a.address];
       if (!was || was === a.status) continue;
-      const done = a.status === "done";
+      // A verdict changing under an agent that didn't move isn't the agent finishing.
+      const moved = released.has(a.address) || nativeBefore?.[a.address] !== this.nativeStatus[a.address];
+      const done = a.status === "done" && moved;
       const blocked = a.status === "blocked" && !(win && a.focused);
       if (!done && !blocked) continue;
       const who = a.program?.name || a.app || "Agent";
@@ -186,6 +245,91 @@ export default class Agents extends View {
   }
 
 
+  // What an agent's status is once the verdicts are in. Only a stopped agent changes.
+  effective(list) {
+    return list.map((a) => {
+      if (a.status !== "done" && a.status !== "idle") return a;
+      const s = this.holds[a.address] ? "working" : this.decisions[a.address];
+      return s ? { ...a, status: s } : a;
+    });
+  }
+
+  // Starts holding agents that just stopped. Runs from render too: the redraw for the
+  // stop comes before the next timer tick, and would show them done for a moment.
+  catchStops(list) {
+    const prev = this.nativeSeen;
+    this.nativeSeen = Object.fromEntries(list.map((a) => [a.address, a.status]));
+    if (!prev) return;
+    const now = Date.now();
+    let changed = false;
+    for (const a of list) {
+      if ((a.status !== "done" && a.status !== "idle") || prev[a.address] !== "working") continue;
+      // Whatever was decided before this turn is about an older message.
+      delete this.decisions[a.address];
+      this.holds[a.address] = { at: now, done: a.status === "done", asked: false };
+      changed = true;
+    }
+    if (changed) this.publishEffective();
+  }
+
+  // Holds agents that just stopped until a verdict that started after they stopped.
+  // Returns the agents let go this time, and how many corner notes Herdr put up for
+  // an agent that turned out to be waiting.
+  holdStops(cx, list) {
+    this.catchStops(list);
+    const prev = this.nativeStatus;
+    this.nativeStatus = Object.fromEntries(list.map((a) => [a.address, a.status]));
+    const released = new Set();
+    if (!prev) return { closing: 0, released };
+    const now = Date.now();
+    let closing = 0, changed = false, ask = false;
+    for (const a of list) {
+      const hold = this.holds[a.address];
+      if (!hold) continue;
+      if (a.status !== "done" && a.status !== "idle") { delete this.holds[a.address]; changed = true; continue; }
+      if (!hold.asked) hold.asked = ask = true;
+      if (this.decidedAt <= hold.at && now - hold.at < DECIDE_HOLD) continue;
+      delete this.holds[a.address];
+      released.add(a.address);
+      changed = true;
+      if (hold.done && this.decisions[a.address] === "working") closing++;
+    }
+    if (changed) this.publishEffective();
+    if (ask) this.refreshDecisions(cx);
+    return { closing, released };
+  }
+
+  publishEffective() {
+    const map = { ...this.decisions };
+    for (const k of Object.keys(this.holds)) map[k] = "working";
+    const raw = JSON.stringify(map);
+    if (raw === this.effectiveRaw) return;
+    this.effectiveRaw = raw;
+    setShared("agents.effective", map);
+  }
+
+  refreshDecisions(cx) {
+    if (this.decideBusy) { this.decideAgain = true; return; }
+    this.decideBusy = true;
+    const started = Date.now();
+    cx.spawn(async (cx) => {
+      try {
+        const r = await exec("python3", [`${appHome()}/mods/my-agents/decide.py`], { timeout: 60000 });
+        if (r.code === 0) {
+          const next = {};
+          for (const [k, v] of Object.entries(JSON.parse(r.stdout.trim() || "{}"))) if (v.status) next[k] = v.status;
+          this.decisions = next;
+          this.decidedAt = started;
+          this.publishEffective();
+          cx.notify();
+        }
+      } catch {} finally {
+        this.decideBusy = false;
+        if (this.decideAgain) { this.decideAgain = false; this.refreshDecisions(cx); }
+      }
+    });
+  }
+
   refreshRecaps(cx) {
     if (this.recapBusy) return;
     this.recapBusy = true;
@@ -198,7 +342,7 @@ export default class Agents extends View {
           this.recaps = JSON.parse(raw);
           // Forget what was read of recaps that are gone (a new message replaced them).
           const before = Object.keys(this.seenRecaps).length;
-          for (const k of Object.keys(this.seenRecaps)) if (!this.recaps[k]) delete this.seenRecaps[k];
+          for (const k of Object.keys(this.seenRecaps)) if (!this.recaps[k]?.text) delete this.seenRecaps[k];
           if (Object.keys(this.seenRecaps).length !== before) localStorage.setItem("seenRecaps", JSON.stringify(this.seenRecaps));
           cx.notify();
         }
@@ -211,14 +355,14 @@ export default class Agents extends View {
   // The recap to show for an agent: none once its row was clicked.
   recapOf(addr) {
     const r = this.recaps?.[addr];
-    return r && this.seenRecaps?.[addr] !== `${r.at}|${r.text}` ? r : null;
+    return r?.text && this.seenRecaps?.[addr] !== `${r.at}|${r.text}` ? r : null;
   }
 
   // Clicking a row goes to the agent, where the recap is on screen anyway.
   seeRecap(addr) {
     const r = this.recaps?.[addr];
     if (this.recapOpen === addr) this.recapOpen = null;
-    if (!r || this.seenRecaps[addr] === `${r.at}|${r.text}`) return;
+    if (!r?.text || this.seenRecaps[addr] === `${r.at}|${r.text}`) return;
     this.seenRecaps[addr] = `${r.at}|${r.text}`;
     localStorage.setItem("seenRecaps", JSON.stringify(this.seenRecaps));
   }
@@ -266,31 +410,66 @@ export default class Agents extends View {
   }
 
   // Hovering a row (a moment's rest) opens its recap to the right of the sidebar.
+  // Remembers what the pointer is on; also re-enters if a lost exit left GPUI thinking it never left.
+  trackHover(a, e, cx) {
+    this.hoverBox = e.bounds;
+    if (this.hovered !== a.address) this.hoverRecap(a, true, cx);
+  }
+
+  checkHover(cx) {
+    const b = this.hoverBox;
+    if (!this.hovered || !b) return;
+    const p = globalThis.window.mouse_position();
+    if (p.x >= b.x && p.x < b.x + b.width && p.y >= b.y && p.y < b.y + b.height) return;
+    this.hoverRecap({ address: this.hovered }, false, cx);
+  }
+
   hoverRecap(a, on, cx) {
+    if (!on) this.hoverBox = null;
     if (on) {
       this.hovered = a.address;
-      if (this.recapOf(a.address)) cx.timer.after(RECAP_DELAY, (cx) => {
-        if (this.hovered === a.address && this.recapOpen !== a.address) { this.recapOpen = a.address; cx.notify(); }
+      if (this.recapOf(a.address) || this.recaps?.[a.address]?.last || narrow()) cx.timer.after(RECAP_DELAY, (cx) => {
+        if (this.hovered === a.address && this.recapOpen !== a.address && this.menuFor !== a.address) { this.recapOpen = a.address; cx.notify(); }
       });
     } else {
       if (this.hovered === a.address) this.hovered = null;
       if (this.recapOpen === a.address) this.recapOpen = null;
+      // The row menu's pointer left the row: hovering it again may show the card.
+      if (this.menuFor === a.address) this.menuFor = null;
     }
     cx.notify();
   }
 
-  withRecap(t, a, rowEl) {
-    const r = this.recapOf(a.address);
-    const open = Boolean(r) && this.recapOpen === a.address;
+  // The card names the session on top (the rail shows no names), then the recap, or
+  // without one the start of the agent's last reply (recap.py cuts it to five lines).
+  withRecap(t, a, rowEl, name, where) {
+    const recap = this.recapOf(a.address);
+    const last = recap ? null : this.recaps?.[a.address]?.last;
+    const r = recap ?? last;
+    const open = (Boolean(r) || narrow()) && this.recapOpen === a.address && this.menuFor !== a.address;
+    const head = div().w_full().text_size(12.5).font_semibold().text_color(t.foreground).whitespace_normal().child(name ?? "");
+    // The folder on its own line, quieter than the title.
+    const sub = () => div().w_full().text_size(10).text_color(t.muted).whitespace_normal().child(where ?? "");
     // Anchored to a point at the row's top right: the card's top left goes there,
     // then past the list's 8 px inset and the gap, and lifted a little.
     return rowEl.relative().child(Popup.new(`recap-${a.address}`, div().w(1).h(1)).absolute().top(0).right(0).w(1).h(1).anchor("top_left")
-      .when(open, (el) => el.content(div().pl(8 + POP_GAP).mt(-POP_LIFT).child(v_flex().w(RECAP_W).p(12).gap(6).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
-        .child(h_flex().gap(6).items_center().text_size(11).text_color(t.dim)
+      .when(open && !r, (el) => el.content(div().pl(8 + POP_GAP).mt(-POP_LIFT).child(v_flex().max_w(RECAP_W).px(10).py(7).gap(2).rounded(8).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+        .child(div().text_size(12.5).text_color(t.foreground).whitespace_normal().child(name ?? ""))
+        .when(Boolean(where), (el) => el.child(sub())))))
+      .when(open && Boolean(r), (el) => el.content(div().pl(8 + POP_GAP).mt(-POP_LIFT).child(v_flex().w(RECAP_W).p(12).gap(6).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+        .when(Boolean(name) || Boolean(where), (el) => el.child(v_flex().w_full().gap(2)
+          .when(Boolean(name), (el) => el.child(head))
+          .when(Boolean(where), (el) => el.child(sub()))))
+        // A small pill naming the text, then the text under it. Last reply: at most
+        // five lines, should recap.py's guess of the width be short.
+        .child(h_flex().child(h_flex().flex_none().h(14).px(5).gap(3).items_center().rounded_full().bg(t.hover)
+          .text_size(9.5).font_semibold().text_color(t.muted)
           // One icon for every recap, whichever agent wrote it.
-          .child(svg("mods/my-agents/recap.svg").size(13).flex_none().text_color(t.muted))
-          .child(div().font_semibold().text_color(t.muted).child("Recap")))
-        .child(div().w_full().text_size(12.5).line_height(1.5).text_color(t.foreground).whitespace_normal().child(r.text))))));
+          .child(svg(`mods/my-agents/${recap ? "recap" : "reply"}.svg`).size(9).flex_none().text_color(t.muted))
+          .child(recap ? "Recap" : "Last reply")))
+        .child(div().w_full().mt(-2).text_size(12.5).line_height(1.5).text_color(t.foreground).whitespace_normal()
+          .when(!recap, (el) => el.max_h(CARD_LINE_H * 5).overflow_hidden())
+          .child(r?.text ?? ""))))));
   }
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
@@ -374,6 +553,55 @@ export default class Agents extends View {
         .when(s.id === on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
   }
 
+  // Right-click on a row: archive / unarchive, pin / unpin. A by-hand choice lasts
+  // until the agent's state next changes (then 6 hours idle archives it again).
+  agentMenu(t) {
+    const m = props().agentMenu;
+    const item = (id, icon, label, act) => h_flex().id(id).h(31).px(8).gap(9).rounded(7).items_center()
+      .text_color(t.foreground).hover((el) => el.bg(t.hover))
+      .on_click(() => { act(); closeOverlay(props().overlay); })
+      .child(svg(`mods/${icon}.svg`).size(14).flex_none().text_color(t.muted))
+      .child(div().flex_1().child(label));
+    const setArchived = (on) => {
+      const marks = { ...(shared("agents.archived") ?? {}) };
+      marks[m.address] = { on, at: Date.now() };
+      setShared("agents.archived", marks);
+    };
+    return v_flex().w_full().p(5).bg(t.popover).text_size(12.8)
+      .child(m.archived
+        ? item("am-unarchive", "my-chrome/archive", "Unarchive", () => setArchived(false))
+        : item("am-archive", "my-chrome/archive", "Archive", () => { if (m.pinned) run("terminal.pin", { terminal: m.address, pinned: false }); setArchived(true); }))
+      .child(item("am-pin", `workspace-chrome/${m.pinned ? "pin-off" : "pin"}`, m.pinned ? "Unpin" : "Pin to the top", () => {
+        run("terminal.pin", { terminal: m.address, pinned: !m.pinned });
+        if (!m.pinned && m.archived) setArchived(false);
+      }))
+      // Closes its pane (the tab too when it's the only one), as the tab's own Close does;
+      // one without a pane (sent back) is ended. Asks first, in Herdr's confirm dialog.
+      .child(div().h(1).mx(6).my(4).bg(t.border))
+      .child(item("am-close", "workspace-chrome/x", "Close", () => openOverlay({
+        mod: "my-confirm", kind: "dialog", width: 380, height: 170,
+        props: {
+          title: "Close agent?",
+          danger: true,
+          detail: `${m.name ? `"${m.name}"` : "This agent"} will end${m.pane ? ", and its pane closes" : ""}.`,
+          command: m.pane ? { name: "pane.close", args: { pane: m.pane } } : { name: "terminal.kill", args: { terminal: m.address } },
+        },
+      })));
+  }
+
+  // Opens the row menu where the hover card goes: just right of the sidebar, its top
+  // at the row's top, lifted the same POP_LIFT (as the + menu). It takes the card's place.
+  rowMenu(a, archived) {
+    return (e, cx) => {
+      cx.stop_propagation();
+      this.menuFor = a.address; this.recapOpen = null; cx.notify();
+      const z = settings().zoom || 1, top = e.bounds?.y ?? e.position.y;
+      openOverlay({ mod: "my-agents", kind: "popup", width: 190, height: 122,
+        at: { x: (sidebarW() + POP_GAP) * z, y: Math.max(0, top - POP_LIFT * z) },
+        props: { agentMenu: { address: a.address, archived, pinned: a.pinned, pane: a.pane ?? null, name: a.title || a.tab_name || a.program?.name || null } } });
+    };
+  }
+
   peek(addr) {
     run("terminal.peek", { terminal: addr });
   }
@@ -427,12 +655,35 @@ export default class Agents extends View {
     return div().size(7).mx(3).flex_none().rounded(4).bg(a.status === "done" ? color : t.dim + "00");
   }
 
+  // Which Clawd (or null: the icon) to draw for an agent, and its opacity. On a
+  // change the old one stays while it fades out, then the new one fades in.
+  picFade(a, cx) {
+    this.pics ??= new Map();
+    const want = clawdOf(a);
+    let st = this.pics.get(a.address);
+    if (!st) this.pics.set(a.address, (st = { gif: want, op: 1, busy: false }));
+    st.next = want;
+    if (st.gif !== want && !st.busy) {
+      st.busy = true;
+      st.op = 0;
+      cx.timer.after(PIC_FADE.duration, (cx) => {
+        st.gif = st.next;
+        cx.notify();
+        cx.timer.after(30, (cx) => { st.op = 1; st.busy = false; cx.notify(); });
+      });
+    }
+    return st;
+  }
+
   render(cx) {
     const t = theme();
     if (props()?.sortMenu) return this.sortMenu(t);
+    if (props()?.agentMenu) return this.agentMenu(t);
+    this.gifs = 0; // Clawds drawn this time, counted by row()
     const collapsed = narrow();
     const sort = sortOf();
-    let list = agents();
+    this.catchStops(agents());
+    let list = this.effective(agents());
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     const all = terminals();
     this.migratePins(all);
@@ -444,9 +695,23 @@ export default class Agents extends View {
     const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...this.tree(all, a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
     const rankOf = (a) => urgency.get(a.address);
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
+    // Archived: by hand (until the state next changes), or idle 6 hours. Pinned never.
+    const marks = shared("agents.archived") ?? {};
+    const isArchived = (a) => {
+      if (a.pinned) return false;
+      const m = marks[a.address];
+      if (m && this.since(a) <= m.at) return m.on;
+      return !a.focused && a.status === "idle" && now - this.since(a) >= ARCHIVE_AFTER;
+    };
+    const sorted = list;
     const pinned = list.filter((a) => a.pinned);
-    const rest = list.filter((a) => !a.pinned);
-    list = [...pinned, ...rest];
+    const old = list.filter((a) => !a.pinned && isArchived(a));
+    const rest = list.filter((a) => !a.pinned && !isArchived(a));
+    const archivedSet = new Set(old.map((a) => a.address));
+    list = [...pinned, ...rest, ...old];
+    if (list.length && Object.keys(marks).some((k) => !this.listed.has(k))) {
+      setShared("agents.archived", Object.fromEntries(Object.entries(marks).filter(([k]) => this.listed.has(k))));
+    }
     setAgentOrder(list.map((a) => a.address));
 
     const withKids = (a, i) => {
@@ -497,8 +762,18 @@ export default class Agents extends View {
       if (detail.get(a.address) == null && seen[`${a.space_name}\u0000`] > 1) detail.set(a.address, label(a));
     }
 
+    // Where the session is working, for the rail's hover title: its folder, home as ~.
+    const folders = new Map(all.map((x) => [x.address, x.cwd]));
+    const place = (a) => {
+      const p = folders.get(a.address);
+      if (!p) return null;
+      return !a.address.includes("/") && (p === home() || p.startsWith(`${home()}/`)) ? `~${p.slice(home().length)}` : p;
+    };
+
     const row = (a, i, subs = []) => {
-      const pic = icon(a.program, 16, t.foreground);
+      const { gif, op } = this.picFade(a, cx);
+      if (gif) this.gifs++;
+      const pic = gif ? clawdPic(gif, 16) : icon(a.program, 16, t.foreground);
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
@@ -510,13 +785,16 @@ export default class Agents extends View {
       if (collapsed) {
         const small = mini();
         const short = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-        const hop = small && a.status === "blocked";
-        const pulse = small && a.status === "working";
+        // Clawd shows the status itself: no hop, pulse or fade on top.
+        const hop = small && a.status === "blocked" && !gif;
+        const pulse = small && a.status === "working" && !gif;
         const dx = small ? (sidebarW() - 16 - 18) / 2 - 8 : 0;
         // Each row carries half the gap above and below: the same space between
         // rows everywhere, even across folded titles, and above the first one.
+        const full = more || label(a) || a.program?.name || "";
         return div().py(ROW_GAP / 2).child(this.withRecap(t, a, h_flex()
           .id(`ag-${a.address}`)
+          .on_mouse_down("right", this.rowMenu(a, archivedSet.has(a.address)))
           .h(30)
           .px(8)
           .flex_none()
@@ -525,21 +803,23 @@ export default class Agents extends View {
           .gap(6)
           // On the mini rail the row is wider than tall: its look goes on a square
           // around the icon instead, which glides with it.
-          .when(!small, (el) => el.overflow_hidden().when(a.focused, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover)))
-          .on_hover((on, cx) => this.hoverRecap(a, on, cx))
+          .when(!small, (el) => el.overflow_hidden().when(a.focused, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+            .on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx)))
           .on_click((_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); })
           .child(div().id(`ag-icon-${a.address}`).flex_none().relative().left(dx).transition("left", SLIDE)
-            .when(small, (el) => el.child(railSquare(t, 30, a.focused, this.hovered === a.address)))
-            .child(div().id(`ag-pic-${a.address}`).opacity(small && a.status === "idle" ? IDLE_OPACITY : 1).transition("opacity", FADE)
+            // Only the square you can see opens the card, not the rest of the rail's width.
+            .when(small, (el) => el.child(railSquare(t, 30, a.focused, this.hovered === a.address)
+              .id(`ag-sq-${a.address}`).on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx))))
+            .child(div().id(`ag-pic-${a.address}`).opacity(op === 0 ? 0 : small && a.status === "idle" ? IDLE_OPACITY : 1).transition("opacity", op === 1 ? FADE : PIC_FADE)
               .when(pulse, (el) => el.loop("opacity", PULSE))
               .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE))
-                .child(Boolean(pic) ? icon(a.program, 18, t.foreground) : div().size(18))))
+                .child(gif ? clawdPic(gif, 18) : Boolean(pic) ? icon(a.program, 18, t.foreground) : div().size(18))))
             .child(this.recapDot(t, a)))
           .child(div().id(`ag-name-${a.address}`).flex_1().min_w(0).truncate().text_color(a.status === "idle" && !a.focused ? t.muted : t.foreground)
             .opacity(small ? 0 : 1).transition("opacity", FADE)
             .when(named(), (el) => el.child(short)))
           .child(h_flex().id(`ag-st-${a.address}`).w(16).flex_none().items_center().justify_center()
-            .opacity(small ? 0 : 1).transition("opacity", FADE).child(this.status(t, a, true)))));
+            .opacity(small ? 0 : 1).transition("opacity", FADE).child(this.status(t, a, true))), full, place(a)));
       }
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
@@ -564,6 +844,7 @@ export default class Agents extends View {
       const name = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
       return this.withRecap(t, a, h_flex()
         .id(`ag-${a.address}`)
+        .on_mouse_down("right", this.rowMenu(a, archivedSet.has(a.address)))
         .px(8)
         .h(30)
         .flex_none()
@@ -573,30 +854,35 @@ export default class Agents extends View {
         .when(a.focused, (el) => el.bg(t.selected))
         .hover((s) => s.bg(t.hover))
         .on_hover((on, cx) => this.hoverRecap(a, on, cx))
+        .on_mouse_move((e, cx) => this.trackHover(a, e, cx))
         .on_click((_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); })
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
             this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
             cx.notify();
-          })).relative().child(pic).child(this.recapDot(t, a))))
+          })).relative().child(div().id(`ag-picf-${a.address}`).opacity(op).transition("opacity", PIC_FADE).child(pic)).child(this.recapDot(t, a))))
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()
           .child(div().min_w(0).max_w(200).truncate().text_color(idle ? t.muted : t.foreground).child(name)))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
         .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
-        .child(this.status(t, a, byPriority && !isPinned)));
+        .child(this.status(t, a, byPriority && !isPinned)), name);
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
     // space are next to each other in agents(), so neighbours make a group.
-    const groups = pinned.length ? [{ id: "pinned", label: "Pinned", status: null, members: pinned }] : [];
-    for (const a of rest) {
-      const r = rankOf(a) || RANK.idle;
+    // Pinned agents keep a closed slot in their group (all), so pinning one slides
+    // it shut there while its slot in the pinned area at the top slides open.
+    const live = sorted.filter((a) => !archivedSet.has(a.address));
+    const groups = [];
+    for (const a of live) {
+      const r = a.pinned ? (this.rank(a) || RANK.idle) : rankOf(a) || RANK.idle;
       const id = byPriority ? `sec-${r}` : `sp-${a.space}`;
-      if (groups.at(-1)?.id === id) groups.at(-1).members.push(a);
-      else groups.push({ id, label: byPriority ? SECTION[r] : a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null, members: [a] });
+      if (groups.at(-1)?.id !== id) groups.push({ id, label: byPriority ? SECTION[r] : a.space_name || "", status: byPriority ? SECTION_STATUS[r] : null, members: [], all: [] });
+      groups.at(-1).all.push(a);
+      if (!a.pinned) groups.at(-1).members.push(a);
     }
 
     // A group's header; it folds the group. Folded, it says how many and the most urgent state.
@@ -635,8 +921,52 @@ export default class Agents extends View {
         .transition("height", SLIDE).transition("opacity", FADE).child(el)
       : el;
     // The mini rail has no titles: every agent, in the same order, folded groups too.
-    const rows = groups.flatMap((g) => [foldAway(`agh-${g.id}`, 30, header(g)),
-      ...(this.folded.has(g.id) && !(collapsed && mini()) ? [] : g.members.flatMap(withKids))]);
+    // A slot is a row's place that slides between 0 and its height.
+    const slot = (id, open, a) => {
+      const parts = open ? withKids(a) : [];
+      const h = open ? ROW_H + (collapsed ? 0 : (parts.length - 1) * SUB_H) : 0;
+      // The clip reaches the list's edges (-8/+8): the mini rail's square is wider than its row.
+      return div().id(id).flex_none().mx(-8).px(8).overflow_hidden().h(h).opacity(open ? 1 : 0)
+        .transition("height", SLIDE).transition("opacity", FADE).children(parts);
+    };
+    const rows = groups.flatMap((g) => [...(g.members.length ? [foldAway(`agh-${g.id}`, 30, header(g))] : []),
+      ...(this.folded.has(g.id) && !(collapsed && mini()) ? [] : g.all.map((a) => slot(`gs-${a.address}`, !a.pinned, a)))]);
+    const pinInk = settings().dark === false ? t.foreground : "#ffffff";
+    // The pinned area: at the top, a line under it. The + row ends the list (above Archived).
+    const pinRows = [...live.map((a) => slot(`ps-${a.address}`, a.pinned, a)),
+      // The line under it, with a small solid pin in its middle (white, see-through).
+      div().id("pin-line").flex_none().mx(-8).px(collapsed && mini() ? 9 : 20).overflow_hidden().h(pinned.length ? 14 : 0).transition("height", SLIDE)
+        // Line and pin share one color; on the mini rail the line reaches into the list's padding.
+        .child(h_flex().h(14).gap(1).items_center().opacity(0.2)
+          .child(div().flex_1().h(1).rounded_full().bg(pinInk))
+          .child(svg("mods/my-agents/pin-solid.svg").size(7).flex_none().text_color(pinInk))
+          .child(div().flex_1().h(1).rounded_full().bg(pinInk)))];
+
+    const archive = { id: "archived", label: "Archived", status: null, members: old };
+    const byAge = [...old].sort((x, y) => this.since(x) - this.since(y));
+    const older = byAge.slice(0, Math.max(0, byAge.length - ARCHIVE_SHOWN)), newest = byAge.slice(older.length);
+    const more = this.archiveMore && older.length > 0;
+    // Older ones are always there, at height 0 when shut: opening grows them, and the
+    // section, sitting on the bottom, grows upward.
+    const slide = (a) => {
+      const parts = withKids(a);
+      const h = ROW_H + (collapsed ? 0 : (parts.length - 1) * SUB_H);
+      return div().id(`arc-${a.address}`).flex_none().mx(-8).px(8).overflow_hidden().h(more ? h : 0).opacity(more ? 1 : 0)
+        .transition("height", SLIDE).transition("opacity", FADE).child(v_flex().children(parts));
+    };
+    const small = collapsed && mini();
+    const moreButton = h_flex().id("arc-more").h(26).mb(2).px(8).flex_none().gap(6).items_center().rounded(7)
+      .when(small, (el) => el.justify_center().px(0))
+      .text_size(11).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
+      .on_click((_e, cx) => { this.archiveMore = !this.archiveMore; cx.notify(); })
+      .child(svg(`mods/my-agents/chevron-${more ? "down" : "up"}.svg`).size(11).flex_none())
+      .when(!small, (el) => el.child(more ? "Show less" : `${older.length} more`))
+      .when(small && !more, (el) => el.child(String(older.length)));
+    const archiveRows = old.length ? [foldAway("agh-archived", 30, header(archive)),
+      ...(this.folded.has("archived") && !small ? [] : [
+        ...older.map(slide),
+        ...(older.length ? [moreButton] : []),
+        ...newest.flatMap(withKids)])] : [];
 
     return track(v_flex().id("agents-root"))
       .size_full()
@@ -670,6 +1000,12 @@ export default class Agents extends View {
       .when(list.length === 0 && !collapsed, (el) =>
         el.child(div().px(12).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
-      .child(v_flex().id("ag-list").flex_1().min_h(0).px(8).overflow_y_scrollbar().mode("always").child(this.newRow(t, collapsed)).children(rows));
+      .child(v_flex().id("ag-list").flex_1().min_h(0).px(8).overflow_y_scrollbar().mode("always").children(pinRows).children(rows).child(this.newRow(t, collapsed))
+        // Archived sits at the bottom: a spacer takes what the list leaves.
+        .when(archiveRows.length > 0, (el) => el.child(div().flex_1().min_h(8)).children(archiveRows).child(div().h(6).flex_none())))
+      // Load every Clawd frame once, unseen, so the first time they're needed none is blank.
+      .when(this.preloadFrames, (el) => el.child(div().absolute().top(0).left(0).size(1).opacity(0).overflow_hidden()
+        .children(Object.entries(CLAWD).flatMap(([name, c]) => Array.from({ length: c.frames },
+          (_, i) => image(`mods/my-agents/clawd-${name}/${pad2(i)}.png`).size(1))))));
   }
 }
