@@ -13,7 +13,6 @@ export default class Rename extends View {
     this.typed = false;
     this.suggestion = null;
     this.suggesting = Boolean(props()?.terminal);
-    this.failed = false;
     this.input = InputState.new({ value: this.text });
     if (this.text) this.input.set_selected_range({ start: 0, end: this.text.length });
     this.input.on("change", (_e, cx) => {
@@ -38,12 +37,11 @@ export default class Rename extends View {
         let name = null;
         try { name = r.code === 0 ? JSON.parse(r.stdout).name : null; } catch {}
         this.suggesting = false;
-        this.failed = !name;
         this.suggestion = name;
         if (name && !this.typed) this.use(name);
         cx.notify();
       })
-      .catch(() => { this.suggesting = false; this.failed = true; cx.notify(); });
+      .catch(() => { this.suggesting = false; cx.notify(); });
   }
 
   // Puts a name in the box, selected, so typing replaces it.
@@ -77,8 +75,10 @@ export default class Rename extends View {
       .bg(t.raised).border_1().border_color(t.input).text_color(t.foreground).cursor_pointer()
       .hover(s => s.bg(t.hover)).on_click((_e, cx) => { action(); cx.notify(); }).child(text);
     const shown = this.suggestion && this.text === this.suggestion;
+    // Asked, answered, and no name came back.
+    const failed = Boolean(p.terminal) && !this.suggesting && !this.suggestion;
     const hint = this.suggesting ? div().text_color(t.dim).child("Suggesting a name…")
-      : this.failed ? div().text_color(t.dim).child("No suggestion this time.")
+      : failed ? div().text_color(t.dim).child("No suggestion this time.")
       : !this.suggestion ? null
       : shown ? h_flex().gap(6).items_center().child(div().text_color(t.dim).child("Suggested by Claude Haiku."))
           .when(Boolean(this.original), el => el.child(chip("rn-orig", `Keep "${this.original}"`, () => this.use(this.original))))

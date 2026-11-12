@@ -33,7 +33,7 @@ const mini = () => sidebarW() < (shared("sidebar.slide") ?? 114);
 // How an icon shows a status there: blocked hops (as in the tab bar), working
 // pulses slowly, idle is a little faded, unread (done) is full.
 const BOUNCE = { from: 0, to: -3.5, period: 700, easing: "ease-in-out" };
-// working: a slow fade in and out, in step with the tab bar's shine (one sweep, 2 s).
+// working: a slow fade in and out (2 s), like the tab bar's working tabs.
 const PULSE = { from: 0.35, to: 1, period: 2000, easing: "ease-in-out" };
 const IDLE_OPACITY = 0.55;
 // Folding to the mini rail and back: titles collapse, icons glide, the rest fades.
@@ -66,6 +66,9 @@ const RECAP_EVERY_AWAY = 30000; // while the window isn't in front
 // status every mod shows (shared "agents.effective"): waiting stays working. An agent
 // that just stopped stays working until the verdict, so a pause never flashes done.
 const DECIDE_EVERY = 4000;
+// With nothing held and no verdict out, a stop is caught by its hold (asked at once):
+// the timer then only retries, as often as decide.py's own RETRY_AFTER.
+const DECIDE_IDLE_EVERY = 60000;
 const DECIDE_HOLD = 5000; // ms: never wait longer than this for a verdict
 const RECAP_DELAY = 300; // how long the pointer rests on a row before the card opens
 // A terminal swallows mouse moves, so a pointer that leaves for one never reports leaving
@@ -197,10 +200,15 @@ export default class Agents extends View {
     cx.timer.every(HOVER_POLL, (cx) => this.checkHover(cx));
     // Carried over a reload: starting empty would show every waiting agent as done.
     this.decisions = { ...(shared("agents.effective") ?? {}) };
+    this.effectiveMap = { ...this.decisions };
     this.holds = {};
     this.decidedAt = 0;
+    this.decideRunAt = 0;
     this.refreshDecisions(cx);
-    cx.timer.every(DECIDE_EVERY, (cx) => this.refreshDecisions(cx));
+    cx.timer.every(DECIDE_EVERY, (cx) => {
+      const waiting = Object.keys(this.holds).length > 0 || Object.keys(this.decisions).length > 0;
+      if (waiting || Date.now() - this.decideRunAt >= DECIDE_IDLE_EVERY) this.refreshDecisions(cx, false);
+    });
     this.macStatus = null;
     cx.timer.every(MAC_EVERY, (cx) => this.macAlerts(cx));
   }
@@ -211,8 +219,9 @@ export default class Agents extends View {
   // just put in the window's corner.
   macAlerts(cx) {
     const nativeBefore = this.nativeStatus;
-    const { closing, released } = this.holdStops(cx, agents());
-    const list = this.effective(agents());
+    const raw = agents();
+    const { closing, released } = this.holdStops(cx, raw);
+    const list = this.effective(raw);
     const prev = this.macStatus;
     this.macStatus = Object.fromEntries(list.map((a) => [a.address, a.status]));
     if (!prev) return; // nothing to compare on the first look
@@ -338,13 +347,11 @@ export default class Agents extends View {
   }
 
 
-  // What an agent's status is once the verdicts are in. Only a stopped agent changes.
+  // What an agent's status is once the verdicts are in (the map publishEffective
+  // builds, the one other mods read). Only a stopped agent changes.
   effective(list) {
-    return list.map((a) => {
-      if (a.status !== "done" && a.status !== "idle") return a;
-      const s = this.holds[a.address] ? "working" : this.decisions[a.address];
-      return s ? { ...a, status: s } : a;
-    });
+    const over = this.effectiveMap;
+    return list.map((a) => ((a.status === "done" || a.status === "idle") && over[a.address] ? { ...a, status: over[a.address] } : a));
   }
 
   // Starts holding agents that just stopped. Runs from render too: the redraw for the
@@ -359,10 +366,11 @@ export default class Agents extends View {
       if ((a.status !== "done" && a.status !== "idle") || prev[a.address] !== "working") continue;
       // Whatever was decided before this turn is about an older message.
       delete this.decisions[a.address];
-      this.holds[a.address] = { at: now, done: a.status === "done", asked: false };
+      this.holds[a.address] = { at: now, done: a.status === "done" };
       changed = true;
     }
-    if (changed) this.publishEffective();
+    // Asked from the next holdStops (render has no cx for it).
+    if (changed) { this.askDecide = true; this.publishEffective(); }
   }
 
   // Holds agents that just stopped until a verdict that started after they stopped.
@@ -375,12 +383,11 @@ export default class Agents extends View {
     const released = new Set();
     if (!prev) return { closing: 0, released };
     const now = Date.now();
-    let closing = 0, changed = false, ask = false;
+    let closing = 0, changed = false;
     for (const a of list) {
       const hold = this.holds[a.address];
       if (!hold) continue;
       if (a.status !== "done" && a.status !== "idle") { delete this.holds[a.address]; changed = true; continue; }
-      if (!hold.asked) hold.asked = ask = true;
       if (this.decidedAt <= hold.at && now - hold.at < DECIDE_HOLD) continue;
       delete this.holds[a.address];
       released.add(a.address);
@@ -388,23 +395,26 @@ export default class Agents extends View {
       if (hold.done && this.decisions[a.address] === "working") closing++;
     }
     if (changed) this.publishEffective();
-    if (ask) this.refreshDecisions(cx);
+    if (this.askDecide) { this.askDecide = false; this.refreshDecisions(cx); }
     return { closing, released };
   }
 
   publishEffective() {
     const map = { ...this.decisions };
     for (const k of Object.keys(this.holds)) map[k] = "working";
+    this.effectiveMap = map;
     const raw = JSON.stringify(map);
     if (raw === this.effectiveRaw) return;
     this.effectiveRaw = raw;
     setShared("agents.effective", map);
   }
 
-  refreshDecisions(cx) {
-    if (this.decideBusy) { this.decideAgain = true; return; }
+  // again: run once more after a busy run (a new stop must get a verdict that
+  // started after it); the timer's own calls don't need that.
+  refreshDecisions(cx, again = true) {
+    if (this.decideBusy) { if (again) this.decideAgain = true; return; }
     this.decideBusy = true;
-    const started = Date.now();
+    const started = (this.decideRunAt = Date.now());
     cx.spawn(async (cx) => {
       try {
         const r = await exec("python3", [`${appHome()}/mods/my-agents/decide.py`], { timeout: 60000 });
@@ -426,7 +436,8 @@ export default class Agents extends View {
   // Only while an agent recap.py reads is alive, and less often in the background.
   refreshRecaps(cx) {
     if (this.recapBusy) return;
-    if (!agents().some(RECAPS)) {
+    const list = agents();
+    if (!list.some(RECAPS)) {
       if (this.recapRaw && this.recapRaw !== "{}") { this.recapRaw = "{}"; this.recaps = {}; cx.notify(); }
       return;
     }
@@ -435,7 +446,9 @@ export default class Agents extends View {
     this.recapBusy = true;
     cx.spawn(async (cx) => {
       try {
-        const r = await exec("python3", [`${appHome()}/mods/my-agents/recap.py`]);
+        // opencode's replies cost recap.py an `hc ls` and more: only when one is open.
+        const opencode = list.some((a) => /^opencode/.test(a.app ?? "") || a.program?.key === "opencode");
+        const r = await exec("python3", [`${appHome()}/mods/my-agents/recap.py`, ...(opencode ? ["--opencode"] : [])]);
         const raw = r.code === 0 ? r.stdout.trim() || "{}" : null;
         if (raw !== null && raw !== this.recapRaw) {
           this.recapRaw = raw;
@@ -698,7 +711,7 @@ export default class Agents extends View {
       const z = settings().zoom || 1, top = e.bounds?.y ?? e.position.y;
       openOverlay({ mod: "my-agents", kind: "popup", width: 190, height: 122,
         at: { x: (sidebarW() + POP_GAP) * z, y: Math.max(0, top - POP_LIFT * z) },
-        props: { agentMenu: { address: a.address, archived, pinned: a.pinned, pane: a.pane ?? null, name: a.title || a.tab_name || a.program?.name || null } } });
+        props: { agentMenu: { address: a.address, archived, pinned: a.pinned, pane: a.pane ?? null, name: this.sessionTitle(a) } } });
     };
   }
 
@@ -762,15 +775,15 @@ export default class Agents extends View {
     this.pics ??= new Map();
     const want = clawdOf(a);
     let st = this.pics.get(a.address);
-    if (!st) this.pics.set(a.address, (st = { gif: want, op: 1, busy: false }));
+    if (!st) this.pics.set(a.address, (st = { gif: want, op: 1 }));
     st.next = want;
-    if (st.gif !== want && !st.busy) {
-      st.busy = true;
+    // op 0: a fade is under way, and picks up st.next when it's done.
+    if (st.gif !== want && st.op !== 0) {
       st.op = 0;
       cx.timer.after(PIC_FADE.duration, (cx) => {
         st.gif = st.next;
         cx.notify();
-        cx.timer.after(30, (cx) => { st.op = 1; st.busy = false; cx.notify(); });
+        cx.timer.after(30, (cx) => { st.op = 1; cx.notify(); });
       });
     }
     return st;
@@ -783,9 +796,12 @@ export default class Agents extends View {
     this.gifs = 0; // Clawds drawn this time, counted by row()
     const collapsed = narrow();
     const sort = sortOf();
-    this.catchStops(agents());
-    let list = this.effective(agents());
+    const raw = agents();
+    this.catchStops(raw);
+    let list = this.effective(raw);
     this.listed = new Map(list.map((a) => [a.address, a.status]));
+    // Fades of agents that are gone.
+    if (this.pics) for (const k of this.pics.keys()) if (!this.listed.has(k)) this.pics.delete(k);
     const all = terminals();
     this.migratePins(all);
     const shown = focused()?.agent;
@@ -807,12 +823,12 @@ export default class Agents extends View {
       if (m && this.since(a) <= m.at) return m.on;
       return !a.focused && a.status === "idle" && now - this.since(a) >= ARCHIVE_AFTER;
     };
-    const sorted = list;
-    const pinned = list.filter((a) => a.pinned);
-    const old = list.filter((a) => !a.pinned && isArchived(a));
-    const rest = list.filter((a) => !a.pinned && !isArchived(a));
-    const archivedSet = new Set(old.map((a) => a.address));
-    list = [...pinned, ...rest, ...old];
+    const archivedSet = new Set(list.filter(isArchived).map((a) => a.address));
+    // Not archived, in list order (pinned ones among them).
+    const live = list.filter((a) => !archivedSet.has(a.address));
+    const pinned = live.filter((a) => a.pinned);
+    const old = list.filter((a) => archivedSet.has(a.address));
+    list = [...pinned, ...live.filter((a) => !a.pinned), ...old];
     if (list.length && Object.keys(marks).some((k) => !this.listed.has(k))) {
       setShared("agents.archived", Object.fromEntries(Object.entries(marks).filter(([k]) => this.listed.has(k))));
     }
@@ -927,6 +943,10 @@ export default class Agents extends View {
       }
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
+      // The icon is the status (no spinner, dot or tag at the row's end): Clawd shows
+      // it itself; other icons hop when blocked and pulse while working, as on the rail.
+      const hop = a.status === "blocked" && !gif;
+      const pulse = a.status === "working" && !gif;
       const isPinned = a.pinned;
       const pin = div()
         .id(`pin-${a.address}`)
@@ -965,21 +985,22 @@ export default class Agents extends View {
             cx.stop_propagation();
             this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
             cx.notify();
-          })).relative().child(div().id(`ag-picf-${a.address}`).opacity(op).transition("opacity", PIC_FADE).child(pic)).child(this.recapDot(t, a))))
+          })).relative().child(div().id(`ag-picf-${a.address}`).opacity(op).transition("opacity", PIC_FADE)
+            .child(div().when(pulse, (el) => el.loop("opacity", PULSE))
+              .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE)).child(pic))))
+          .child(this.recapDot(t, a))))
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()
           .child(div().min_w(0).max_w(200).truncate().text_color(idle ? t.muted : t.foreground).child(name)))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
         .when(subs.length > 0, el => el.child(fold(a, subs)))
         .when(this.hovered === a.address, el => el.child(pin))
-        .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when))))
-        .child(this.status(t, a, byPriority && !isPinned)), name);
+        .when(this.hovered !== a.address && Boolean(when), el => el.child(div().flex_none().text_size(11).text_color(t.dim).child(duration(now - when)))), name);
     };
 
     // Groups in list order: spaces (grouped) or priority sections. Agents of a
     // space are next to each other in agents(), so neighbours make a group.
     // Pinned agents keep a closed slot in their group (all), so pinning one slides
     // it shut there while its slot in the pinned area at the top slides open.
-    const live = sorted.filter((a) => !archivedSet.has(a.address));
     const groups = [];
     for (const a of live) {
       const r = a.pinned ? (this.rank(a) || RANK.idle) : rankOf(a) || RANK.idle;
@@ -1025,9 +1046,10 @@ export default class Agents extends View {
         .transition("height", SLIDE).transition("opacity", FADE).child(el)
       : el;
     // The mini rail has no titles: every agent, in the same order, folded groups too.
-    // A slot is a row's place that slides between 0 and its height.
-    const slot = (id, open, a) => {
-      const parts = open ? withKids(a) : [];
+    // A slot is a row's place that slides between 0 and its height. keep: its rows
+    // stay while it shuts (else they go at once and only the space slides).
+    const slot = (id, open, a, keep = false) => {
+      const parts = open || keep ? withKids(a) : [];
       const h = open ? ROW_H + (collapsed ? 0 : (parts.length - 1) * SUB_H) : 0;
       // The clip reaches the list's edges (-8/+8): the mini rail's square is wider than its row.
       return div().id(id).flex_none().mx(-8).px(8).overflow_hidden().h(h).opacity(open ? 1 : 0)
@@ -1050,20 +1072,16 @@ export default class Agents extends View {
     const byAge = [...old].sort((x, y) => this.since(x) - this.since(y));
     const older = byAge.slice(0, Math.max(0, byAge.length - ARCHIVE_SHOWN)), newest = byAge.slice(older.length);
     const more = this.archiveMore && older.length > 0;
-    // Older ones are always there, at height 0 when shut: opening grows them, and the
-    // section, sitting on the bottom, grows upward.
-    const slide = (a) => {
-      const parts = withKids(a);
-      const h = ROW_H + (collapsed ? 0 : (parts.length - 1) * SUB_H);
-      return div().id(`arc-${a.address}`).flex_none().mx(-8).px(8).overflow_hidden().h(more ? h : 0).opacity(more ? 1 : 0)
-        .transition("height", SLIDE).transition("opacity", FADE).child(v_flex().children(parts));
-    };
+    // Older ones slide open and shut (the section, sitting on the bottom, grows
+    // upward); shut, they're only built while the slide is still going.
+    const shutting = Date.now() - (this.archiveAt ?? 0) < SLIDE.duration + 50;
+    const slide = (a) => slot(`arc-${a.address}`, more, a, shutting);
     const small = collapsed && mini();
     const moreButton = h_flex().id("arc-more").h(26).mb(2).px(8).flex_none().gap(6).items_center().rounded(7)
       .when(small, (el) => el.justify_center().px(0))
       .text_size(11).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
-      .on_click((_e, cx) => { this.archiveMore = !this.archiveMore; cx.notify(); })
-      .child(svg(`mods/my-agents/chevron-${more ? "down" : "up"}.svg`).size(11).flex_none())
+      .on_click((_e, cx) => { this.archiveMore = !this.archiveMore; this.archiveAt = Date.now(); cx.notify(); })
+      .child(svg(more ? "mods/workspace-chrome/chevron-down.svg" : "mods/my-agents/chevron-up.svg").size(11).flex_none())
       .when(!small, (el) => el.child(more ? "Show less" : `${older.length} more`))
       .when(small && !more, (el) => el.child(String(older.length)));
     const archiveRows = old.length ? [foldAway("agh-archived", 30, header(archive)),

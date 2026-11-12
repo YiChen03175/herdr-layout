@@ -42,6 +42,7 @@ SECRETS = [
     (re.compile(r"(?i)\b(authorization|x-api-key|cookie)\s*:\s*[^'\"\n]+"), r"\1: ***"),
     (re.compile(r"(?i)\bbearer\s+\S+"), "Bearer ***"),
     (re.compile(r"(?i)([A-Z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key)[A-Z0-9_.-]*)(\s*[=:]\s*)(['\"]?)[^\s'\"]+\3"), r"\1\2***"),
+    (re.compile(r"(?i)(--?[a-z0-9-]*(?:token|secret|passw(?:or)?d|api-?key)[a-z0-9-]*)\s+\S+"), r"\1 ***"),
     (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://***@"),
 ]
 INSTRUCTIONS = (

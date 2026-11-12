@@ -19,6 +19,8 @@ const base = (path) => path.replace(/\/+$/, "").split("/").pop();
 // bar has numbers as soon as the app starts.
 const USAGE_FILE = () => `${appHome()}/data/my-status/usage.json`;
 const USAGE_EVERY = 5 * 60 * 1000;
+// How often to see whether it's due (no process unless it is).
+const USAGE_CHECK = 30000;
 const METERS = [["fable", "Fable", "Fable 本週用量"], ["week", "週", "本週用量（全部模型）"], ["five_hour", "5h", "5 小時用量"]];
 const BAR_W = 64;
 const BAR_H = 14;
@@ -41,9 +43,9 @@ export default class WorkspaceStatus extends View {
     cx.timer.every(DIRTY_EVERY, (cx) => { if (window()?.active) this.look(cx); });
 
     this.usage = null; // {five_hour, week, fable, at}; each window {pct, resets} or null
-    cx.spawn(async (cx) => { this.take(await readTextFile(USAGE_FILE()), cx); });
-    this.fetch(cx);
-    cx.timer.every(USAGE_EVERY, (cx) => this.fetch(cx));
+    this.usageTried = 0;
+    cx.spawn(async (cx) => { this.take(await readTextFile(USAGE_FILE()), cx); this.fetch(cx); });
+    cx.timer.every(USAGE_CHECK, (cx) => this.fetch(cx));
   }
 
   // The focused pane's folder, when it's on this computer (git can't be asked
@@ -86,13 +88,20 @@ export default class WorkspaceStatus extends View {
     } catch {}
   }
 
-  // A failed run keeps the last numbers.
+  // Asks again once the last answer (or try) is USAGE_EVERY old, only while the
+  // window is in front: each run starts a Claude Code. A failed run keeps the last numbers.
   fetch(cx) {
+    const last = Math.max((this.usage?.at ?? 0) * 1000, this.usageTried);
+    if (this.usageBusy || !window()?.active || Date.now() - last < USAGE_EVERY) return;
+    this.usageBusy = true;
+    this.usageTried = Date.now();
     cx.spawn(async (cx) => {
       try {
         const r = await exec("python3", [`${appHome()}/mods/my-status/usage.py`], { timeout: 60000 });
         if (r.code === 0) this.take(r.stdout, cx);
-      } catch {}
+      } catch {} finally {
+        this.usageBusy = false;
+      }
     });
   }
 
@@ -108,14 +117,20 @@ export default class WorkspaceStatus extends View {
       + (w.cap != null ? `，最多可用每週上限的 ${w.cap}%` : "")
       + (w.resets ? `，${when(w.resets)} 重置` : "");
     const fill = (p, color, alpha) => div().absolute().top(0).left(0).h_full().w(width(p)).rounded_full().bg(color).opacity(alpha);
+    // The percent, right-aligned across the whole bar.
+    const number = (color) => h_flex().absolute().top(0).left(0).w(BAR_W).h_full().items_center().justify_end().pr(6)
+      .text_size(9.5).font_weight(600).text_color(color).child(`${Math.round(w.pct)}`);
     return h_flex().gap(6).items_center().flex_none().tooltip(tip)
       .child(div().child(label))
       .child(div().relative().w(BAR_W).h(BAR_H).rounded_full().overflow_hidden()
         .child(div().absolute().inset_0().rounded_full().bg(t.dim).opacity(TRACK))
         .when(w.pct > 0, el => el.child(fill(w.pct, hot ? t.blocked : t.accent, key === "fable" ? BRIGHT : SOFT)))
         .when(part != null, el => el.child(fill(part, t.accent, BRIGHT)))
-        .child(h_flex().absolute().inset_0().items_center().justify_end().pr(6)
-          .text_size(9.5).font_weight(600).text_color(t.foreground).child(`${Math.round(w.pct)}`)));
+        .child(number(t.foreground))
+        // Where the fill reaches under the number, that part of it is drawn again
+        // in the background colour, clipped to the fill, so it stays readable.
+        .when(w.pct > 0, el => el.child(div().absolute().top(0).left(0).h_full().w(width(w.pct)).overflow_hidden()
+          .child(number(t.background)))));
   }
 
   render() {

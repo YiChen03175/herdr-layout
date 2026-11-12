@@ -20,15 +20,12 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 
 sys.dont_write_bytecode = True  # no __pycache__ in the mod folder
-from recap import HOME, claude_last, claude_sessions
+from recap import HOME, claude_last, claude_sessions, hc, hc_terminals
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.join(HOME, ".config/herdr-app")
 KEY_FILE = os.path.join(APP, "secrets/openrouter-decider.key")
@@ -71,11 +68,6 @@ def redact(text):
     for pattern, mask in SECRETS:
         text = pattern.sub(mask, text)
     return text
-
-
-def hc(*args):
-    exe = shutil.which("hc") or os.path.join(HOME, ".local/bin/hc")
-    return json.loads(subprocess.run([exe, *args, "--json"], capture_output=True, text=True, timeout=10).stdout)
 
 
 def processes():
@@ -123,6 +115,7 @@ def last_message(session):
 
 
 def ask(state):
+    import urllib.request  # only here: most runs never ask
     with open(KEY_FILE) as f:
         key = f.read().strip()
     body = json.dumps({"model": MODEL, "state": state, "questions": QUESTION}).encode()
@@ -142,21 +135,20 @@ def ask(state):
                      "seconds": round(time.time() - started, 2), "cost": (reply.get("usage") or {}).get("cost")}
 
 
-def load_cache():
+def load_json(path):
     try:
-        with open(CACHE_FILE) as f:
+        with open(path) as f:
             return json.load(f)
     except Exception:
         return {}
 
 
-def save_cache(cache):
-    newest = sorted(cache.items(), key=lambda kv: kv[1].get("at", 0))[-CACHE_MAX:]
-    os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
-    tmp = CACHE_FILE + ".tmp"
+def save_json(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(dict(newest), f)
-    os.replace(tmp, CACHE_FILE)
+        json.dump(obj, f)
+    os.replace(tmp, path)
 
 
 def log(entry):
@@ -170,14 +162,6 @@ def log(entry):
         print(f"decide.py: log: {type(e).__name__}", file=sys.stderr)
 
 
-def load_seen():
-    try:
-        with open(SEEN_FILE) as f:
-            return json.load(f)
-    except Exception:
-        return {}
-
-
 def skip(seen, context, reason):
     """Logs why an agent wasn't asked about, once until the reason changes."""
     if seen.get(context["terminal"]) != reason:
@@ -185,18 +169,22 @@ def skip(seen, context, reason):
         log({**context, "skipped": reason})
 
 
-def judge(message, commands, cache, context):
-    """The cached or new answer, or None while the model can't be reached."""
-    state = {"last_message": redact(message), "open_commands": [{**c, "command": redact(c["command"])} for c in commands]}
+def judge(message, shells, ports_of, cache, context):
+    """The cached or new answer, or None while the model can't be reached.
+    shells: [(pid, command)]; ports_of(pid) is only called when the model is asked."""
+    message = redact(message)
+    commands = [redact(c) for _, c in shells]
     # Without the ports: they come and go during a run, and one stop is asked about once.
-    identity = {"last_message": state["last_message"], "commands": sorted(c["command"] for c in state["open_commands"])}
+    identity = {"last_message": message, "commands": sorted(commands)}
     key = hashlib.sha256(json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     hit = cache.get(key)
     if hit and (hit.get("state") or time.time() - hit.get("at", 0) < RETRY_AFTER):
         return hit if hit.get("state") else None
+    state = {"last_message": message,
+             "open_commands": [{"command": c, "listening_ports": ports_of(pid)} for (pid, _), c in zip(shells, commands)]}
     try:
         verdict, detail = ask(state)
-    except (OSError, ValueError, KeyError, urllib.error.URLError) as e:
+    except (OSError, ValueError, KeyError) as e:  # urllib's errors are OSErrors
         error = f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
         print(f"decide.py: {error}", file=sys.stderr)
         log({**context, "sent": state, "error": error})
@@ -208,14 +196,22 @@ def judge(message, commands, cache, context):
 
 
 def main():
-    listed = hc("ls")
-    listed = listed if isinstance(listed, list) else listed.get("terminals", [])
-    stopped = [t["address"] for t in listed if t.get("status") in ("done", "idle") and "/" not in t["address"]]
-    out, seen = {}, load_seen()
+    # Only Claude Code agents on this computer: the rest is never asked about.
+    stopped = [t["address"] for t in hc_terminals() if t.get("agent") == "claude-code"
+               and t.get("status") in ("done", "idle") and "/" not in t["address"]]
+    out, seen = {}, load_json(SEEN_FILE)
     seen_before = dict(seen)
     if stopped:
-        kids, sessions, ports, cache = processes(), claude_sessions(), None, load_cache()
+        kids, sessions, cache = processes(), claude_sessions(), load_json(CACHE_FILE)
         before = json.dumps(cache, sort_keys=True)
+        lsof = None
+
+        def ports_of(pid):
+            """The ports a shell and its children listen on (one lsof per run, when asked)."""
+            nonlocal lsof
+            lsof = listening() if lsof is None else lsof
+            return sorted(set(lsof.get(pid, ())).union(*[lsof.get(c[0], ()) for c in walk(kids, pid)]))
+
         for address in stopped:
             t = hc("get", address)
             if (t.get("status") or {}).get("app") != "claude-code":
@@ -234,22 +230,15 @@ def main():
                 skip(seen, context, "no_message" if not message else "short_message")
                 continue
             seen.pop(address, None)
-            ports = listening() if ports is None else ports
-            commands = []
-            for pid, line in shells:
-                held = set(ports.get(pid, ())).union(*[ports.get(c[0], ()) for c in walk(kids, pid)])
-                command = command_of(line) or " ".join(c[1] for c in kids.get(pid, []))[:COMMAND_MAX]
-                commands.append({"command": command, "listening_ports": sorted(held)})
-            answer = judge(message, commands, cache, context)
+            commands = [(pid, command_of(line) or " ".join(c[1] for c in kids.get(pid, []))[:COMMAND_MAX]) for pid, line in shells]
+            answer = judge(message, commands, ports_of, cache, context)
             if answer:
                 out[address] = {"status": STATUS.get(answer["state"]), "state": answer["state"], "confidence": answer["confidence"]}
         if json.dumps(cache, sort_keys=True) != before:
-            save_cache(cache)
+            save_json(CACHE_FILE, dict(sorted(cache.items(), key=lambda kv: kv[1].get("at", 0))[-CACHE_MAX:]))
     seen = {k: v for k, v in seen.items() if k in stopped}  # a new stop logs again
     if seen != seen_before:
-        os.makedirs(os.path.dirname(SEEN_FILE), exist_ok=True)
-        with open(SEEN_FILE, "w") as f:
-            json.dump(seen, f)
+        save_json(SEEN_FILE, seen)
     json.dump(out, sys.stdout)
 
 

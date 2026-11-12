@@ -31,6 +31,9 @@ function find(node, id) {
 // SLIDE_MS with a short burst of resizes, like the sidebar's rail (layout nodes
 // have no native transition). want: "gitlab" | "files" | "changes" | null (closed).
 const SLIDE_MS = 240, PANEL_W = 368;
+// The layout has no min on the panel (the slide starts it at 0): this is its floor
+// at rest, and the narrowest width remembered.
+const PANEL_MIN = 280;
 const ease = (k) => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
 function panelNow() {
   const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
@@ -39,9 +42,11 @@ function panelNow() {
 function slidePanel(view, want, cx) {
   const now = panelNow();
   if (now === undefined || (want ?? null) === now) return;
-  const id = (view.slide = (view.slide ?? 0) + 1);
-  const width = () => shared("panel.width") ?? PANEL_W;
+  // Open to open is just a switch: no slide (one under way carries on).
   if (want && now) { run("layout.select", { stack: "panel-body", child: want }); return; }
+  const interrupted = Boolean(view.slide); // its width is part of a slide, not a choice
+  const id = (view.slide = (view.slide ?? 0) + 1);
+  const width = () => Math.max(PANEL_MIN, shared("panel.width") ?? PANEL_W);
   let from, to;
   if (want) {
     from = 0; to = width();
@@ -50,7 +55,7 @@ function slidePanel(view, want, cx) {
     run("layout.show", { id: "panel" });
   } else {
     from = find(layout(), "panel")?.size?.px ?? width(); to = 0;
-    if (from > 0) setShared("panel.width", from);
+    if (!interrupted && from >= PANEL_MIN) setShared("panel.width", from);
   }
   const start = Date.now();
   const step = (cx) => {
@@ -153,7 +158,10 @@ export default class Tabs extends View {
     if (!tab || !panel) return;
     const now = panel.hidden ? null : body?.active ?? null;
     if (this.slide) return; // mid-slide sizes aren't choices
-    if (!panel.hidden && (panel.size?.px ?? 0) >= 120 && panel.size.px !== shared("panel.width")) setShared("panel.width", panel.size.px);
+    // At rest, dragged narrower than PANEL_MIN: back to it; else it's the width to keep.
+    const px = panel.size?.px ?? 0;
+    if (!panel.hidden && px < PANEL_MIN) run("layout.resize", { id: "panel", px: PANEL_MIN });
+    else if (!panel.hidden && px !== shared("panel.width")) setShared("panel.width", px);
     if (tab.id !== this.tab) {
       const first = this.tab === undefined;
       this.tab = tab.id; this.panelPending = null;
@@ -173,19 +181,22 @@ export default class Tabs extends View {
     }
     if (this.panels[tab.id] === now) return;
     this.panels[tab.id] = now;
-    const live = new Set(spaces().flatMap(p => p.tabs.map(c => c.id)));
-    if (live.size) for (const id of Object.keys(this.panels)) if (!live.has(id)) delete this.panels[id];
     localStorage.setItem("tabPanels", JSON.stringify(this.panels));
   }
 
   // An unnamed tab keeps the number it first showed (its place then, or the next free one),
   // so moving tabs doesn't renumber them.
-  labels(shown) {
-    const live = new Set(spaces().flatMap(p => p.tabs.map(c => c.id)));
+  // sp: every space (closed tabs' entries go).
+  labels(shown, sp) {
+    const live = new Set(sp.flatMap(p => p.tabs.map(c => c.id)));
     let changed = false;
     if (live.size) for (const id of Object.keys(this.numbers)) if (!live.has(id)) { delete this.numbers[id]; changed = true; }
-    // Closed tabs' measures and ranks go too.
+    // Closed tabs' measures, ranks and panels go too.
     if (live.size) for (const m of [this.ranks, this.widths, this.doneSince]) for (const id of Object.keys(m)) if (!live.has(id)) delete m[id];
+    if (live.size && Object.keys(this.panels).some(id => !live.has(id))) {
+      for (const id of Object.keys(this.panels)) if (!live.has(id)) delete this.panels[id];
+      localStorage.setItem("tabPanels", JSON.stringify(this.panels));
+    }
     const taken = new Set(shown.filter(c => !c.named && this.numbers[c.id]).map(c => this.numbers[c.id]));
     for (const c of shown) {
       if (c.named || this.numbers[c.id]) continue;
@@ -263,7 +274,11 @@ export default class Tabs extends View {
   reorder(cx) {
     if (this.drag?.active || this.pending || this.flip) return;
     const rank = (c) => RANK[c.status] ?? 1;
-    for (const space of liveSpaces()) {
+    const sp = liveSpaces();
+    // Nothing moved or changed state since the last full look (and nothing settling): done.
+    const sig = sp.map(w => w.tabs.map(c => `${c.id}:${c.status}`).join()).join("|");
+    if (sig === this.rankSig && !Object.keys(this.doneSince).length) return;
+    for (const space of sp) {
       const ids = space.tabs.map(c => c.id);
       for (const [i, c] of space.tabs.entries()) {
         const was = this.ranks[c.id], now = rank(c);
@@ -296,10 +311,11 @@ export default class Tabs extends View {
         return; // one move at a time: the next check sees the new order
       }
     }
+    this.rankSig = sig;
   }
 
   // The tab's title; read is a little faded (working pulses only the icon).
-  title(c, text, working, read, t) {
+  title(c, text, read, t) {
     const base = c.active ? t.foreground : t.muted;
     // A narrow bar (where Files and Changes go to icons) gives each title less room.
     // The last tab before +N can be squeezed to fill what's left of the strip.
@@ -374,7 +390,8 @@ export default class Tabs extends View {
 
   render(cx) {
     const t = theme();
-    const space = liveSpaces().find(p => p.active);
+    const sp = liveSpaces();
+    const space = sp.find(p => p.active);
     const all = space?.tabs ?? [];
     // Every pane, by tab: one panes() read for the whole render.
     const byTab = new Map();
@@ -393,11 +410,13 @@ export default class Tabs extends View {
     const lifted = drag?.active ? drag.from : this.pending ? this.pending.from : null;
     // No hover looks while a tab is dragged or settling.
     const still = lifted === null;
-    const label = this.labels(all);
+    const label = this.labels(all, sp);
     const stop = (_e, cx) => cx.stop_propagation();
     const button = (id, label, action) => div().id(id).cursor_pointer().size(26).flex_none().flex().items_center().justify_center().rounded(6).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
       .on_mouse_down("left", stop).on_click(action).child(label);
     const programOf = (c) => { const own = byTab.get(c.id) ?? []; return own.find(p => p.program?.agent)?.program ?? own[0]?.program; };
+    // The terminal a rename suggests from: the tab's agent, else its first terminal.
+    const termOf = (c) => { const own = byTab.get(c.id) ?? []; return (own.find(p => p.program?.agent) ?? own.find(p => p.terminal))?.terminal ?? null; };
     // A tab the + menu opened is named after its program ("Claude Code"): that's not
     // a name anyone chose, so the program's own title (the session name) wins.
     // A name someone gave it (tab.rename) stays.
@@ -438,22 +457,22 @@ export default class Tabs extends View {
           cx.stop_propagation();
           if (e.click_count === 2) {
             this.drag = null;
-            const own = byTab.get(c.id) ?? [];
-            const term = own.find((p) => p.program?.agent) ?? own.find((p) => p.terminal);
             openOverlay({ mod: "my-rename", kind: "dialog", width: 420, height: 210,
-              props: { title: "Rename tab", value: name, terminal: term?.terminal ?? null, command: { name: "tab.rename", args: { id: c.id } } } });
+              props: { title: "Rename tab", value: name, terminal: termOf(c), command: { name: "tab.rename", args: { id: c.id } } } });
             return;
           }
           // Pointer units vs measured widths (they can differ under zoom): calibrate on the press.
           const w = this.widths[c.id], k = w && e.bounds?.width ? w / e.bounds.width : 1;
           this.drag = { id: c.id, from: i, to: i, x0: e.position.x, k, dx: 0, active: false };
         })
-        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "my-menu", kind: "popup", width: 200, props: { tab: "tab", target: { id: c.id, space: space.id } } }); })
+        .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "my-menu", kind: "popup", width: 200,
+          // The name shown here and the terminal to suggest from, for Rename and Close.
+          props: { tab: "tab", target: { id: c.id, space: space.id, name, terminal: termOf(c) } } }); })
         .when(Boolean(program?.icon), el => el.child((program.tint ? svg(program.icon).size(14).text_color(c.active ? t.foreground : t.muted) : image(program.icon).size(14))
           .when(working, el => el.loop("opacity", PULSE))
           .when(!working && read, el => el.opacity(READ.icon))
           .when(c.status === "blocked" || c.status === "done", el => el.relative().loop("top", BOUNCE))))
-        .child(this.title(c, c.zoomed ? `${name} Z` : name, working, read, t));
+        .child(this.title(c, c.zoomed ? `${name} Z` : name, read, t));
     };
     const root = layout(), sidebar = find(root, "sidebar"), w = window();
     // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.

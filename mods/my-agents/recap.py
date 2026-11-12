@@ -19,6 +19,7 @@ lines of the card, for when there is no recap to show.
 - opencode: the running server (`opencode api`), for the session in the terminal's
   folder whose title the terminal shows ("OC | <title>").
 """
+import functools
 import glob
 import json
 import os
@@ -108,11 +109,18 @@ def human(entry):
     return False
 
 
-def claude_recap(session):
+@functools.lru_cache(maxsize=None)
+def claude_transcript(session):
+    """The session's transcript (the newest, if several projects have one), or None."""
     files = glob.glob(os.path.join(HOME, ".claude/projects/*", session + ".jsonl"))
-    if not files:
+    return max(files, key=os.path.getmtime) if files else None
+
+
+def claude_recap(session):
+    path = claude_transcript(session)
+    if not path:
         return None
-    for line in lines_backward(max(files, key=os.path.getmtime)):
+    for line in lines_backward(path):
         if b'"away_summary"' not in line and b'"user"' not in line:
             continue
         try:
@@ -129,10 +137,10 @@ def claude_recap(session):
 
 def claude_last(session):
     """The text of the session's latest assistant message, with its time."""
-    files = glob.glob(os.path.join(HOME, ".claude/projects/*", session + ".jsonl"))
-    if not files:
+    path = claude_transcript(session)
+    if not path:
         return None, None
-    for line in lines_backward(max(files, key=os.path.getmtime)):
+    for line in lines_backward(path):
         if b'"assistant"' not in line:
             continue
         try:
@@ -243,14 +251,21 @@ def run_json(exe, fallback, *args):
     return json.loads(subprocess.run([exe, *args], capture_output=True, text=True, timeout=10).stdout)
 
 
+def hc(*args):
+    return run_json("hc", ".local/bin/hc", *args, "--json")
+
+
+def hc_terminals():
+    """Herdr's terminals (`hc ls`, a list or {terminals: [...]})."""
+    listed = hc("ls")
+    return listed if isinstance(listed, list) else listed.get("terminals", [])
+
+
 def opencode_last():
     """terminal -> (text, at) for opencode terminals, from the server they share."""
-    hc = lambda *a: run_json("hc", ".local/bin/hc", *a, "--json")
     api = lambda *a: run_json("opencode", ".opencode/bin/opencode", "api", *a)
-    listed = hc("ls")
-    listed = listed if isinstance(listed, list) else listed.get("terminals", [])
     out, folders = {}, {}
-    for t in listed:
+    for t in hc_terminals():
         if t.get("agent") != "opencode" or t.get("state") != "live":
             continue
         try:
@@ -300,11 +315,13 @@ def main():
         last = {"text": card_text(text), "at": at} if text else None
         if r or last:
             out[term] = {**(r or {}), **({"last": last} if last else {})}
-    try:
-        for term, (text, at) in opencode_last().items():
-            out.setdefault(term, {})["last"] = {"text": card_text(text), "at": at}
-    except Exception:
-        pass
+    # Only when my-agents saw an opencode agent: it costs an `hc ls` and more.
+    if "--opencode" in sys.argv[1:]:
+        try:
+            for term, (text, at) in opencode_last().items():
+                out.setdefault(term, {})["last"] = {"text": card_text(text), "at": at}
+        except Exception:
+            pass
     json.dump(out, sys.stdout, ensure_ascii=False)
 
 

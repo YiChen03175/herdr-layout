@@ -14,13 +14,13 @@
 - 分頁右鍵的 Close 會先跳確認視窗（`my-menu`，複製自 Herdr 的 `menu`，只改了這點）。確認視窗是 `my-confirm`（複製自 `confirm`），關閉類的 Confirm 按鈕是紅色的。
 - 工作中的分頁，圖示會跟側邊欄一樣慢慢閃爍（2 秒一次）；做完但還沒看的分頁保持全亮，看過的會稍微變淡。
 - 寬度不夠時，GitLab / Files / Changes 只顯示圖示，多出來的分頁收進「+N」。
-- GitLab / Files / Changes 面板**每個分頁（session）各自記住**開或關；切換分頁時面板會用約 0.24 秒的動畫滑開或收合。寬度所有分頁共用。也可以用 `herdr-app do my-tabs.gitlab`／`.files`／`.changes`／`.close` 開關面板。
+- GitLab / Files / Changes 面板**每個分頁（session）各自記住**開或關；切換分頁時面板會用約 0.24 秒的動畫滑開或收合。寬度所有分頁共用，最窄 280px。也可以用 `herdr-app do my-tabs.gitlab`／`.files`／`.changes`／`.close` 開關面板。
 
 **右側 GitLab 面板（`my-gitlab`）**
 - 分頁列右上多一個 GitLab，排在 Files、Changes 左邊，打開依序是：To review（指定我 review 而且我還沒 review 的，有才出現、不能收合）、Open（我開的還沒 merge 的 MR，不含 closed）、Merged（最近 7 天 merge 的）。
 - 每一列有標題、專案、`!編號`，點一下用瀏覽器打開。前面一個圖示代表狀態：紅色警告是 conflict；✗ / ● 是 pipeline 失敗 / 執行中；黃色圈圈勾是 CI 過了但還沒 approve；綠色 ✓ 是 CI 過了也 approve 了。時間在右邊，Merged 預設收起來。標題是 MR 所在的組織名稱（例如 maxnion），右上角的「↻ 3m」點了會重新整理。
 - 在 Open 的 MR 上按右鍵：用瀏覽器打開，或關閉這個 MR（會先跳確認視窗，Enter 確認、Esc 取消；關掉的 MR 之後還能在 GitLab 上重新打開）。
-- 有 MR 等我 review 時，GitLab 按鈕右上角會有紅色數字。
+- 有 MR 等我 review 時，GitLab 按鈕右上角會有紅色數字。區塊是空的時只顯示標題和 0。
 - 面板開著時每 2 分鐘更新，打開時如果資料超過 30 秒會馬上更新；收起來時每 5 分鐘更新一次，Herdr 一開就會先更新一次，讓按鈕上的數字保持正確（layout 裡一個 0 px 的 `gitlab-poll` 區塊負責）。
 
 **左側欄（`my-chrome`、`my-spaces`、`my-agents`）**
@@ -29,7 +29,7 @@
 - Agents 列表：
   - 可以依 space 分組或依優先順序排。
   - 子 agent 會以樹狀顯示在 parent 底下，可以收合。
-  - 收合成窄欄時，用圖示動畫表示狀態：卡住會跳、工作中慢慢閃、閒置稍微變淡。
+  - 展開時狀態看圖示，列的最右邊只留時間：Claude Code 是 Clawd 的小動畫，其他 agent 卡住會跳、工作中慢慢閃。收合成只有圖示的窄欄時也是這樣，閒置的會再稍微變淡。
   - 滑鼠停在某列上會顯示 Recap 小卡，最上面是 session 標題，下面是 Claude Code / Grok 的「while you were away」摘要。沒有 recap（或已經看過）時，改顯示最後一則回應的開頭，最多 5 行（Claude Code、Grok、opencode 都有）。收合成窄欄時，什麼都沒有也會顯示標題。
   - 閒置超過 6 小時的 session 移到列表最底部的「Archived」區。右鍵一列可以手動 Archive / Unarchive、釘選，或 Close（關掉它的 pane，跟 tab 的 Close 一樣；只剩它一個時整個 tab 會關掉），Close 會先跳確認視窗。手動的選擇維持到那個 agent 狀態下次改變為止；釘選的不會被封存。Archived 只顯示最新的 3 個，上方的「N more」按鈕會把較舊的往上展開。
   - Claude Code 的圖示會照狀態換成 Clawd 的小動畫：working 頭上冒思考泡泡、需要你時一臉困惑、done（做完還沒看）開心地跳；idle 維持原本的圖示。換狀態時舊的先淡出、新的再淡入（各約 0.14 秒）。Herdr 不在前景時不播 GIF，這時改用拆開的 PNG 格（`clawd-<狀態>/`）依時間換格，每 0.12 秒重畫一次，只在畫面上有 Clawd 時才跑。GIF 取自 [clawd-tank](https://github.com/marciogranzotto/clawd-tank)、[clawd-pet](https://github.com/abderrahimghazali/clawd-pet)、[clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk)（出處見 `mods/my-agents/clawd.LICENSE`），裁成 36px，每個不到 10 KB。動畫來源與授權見 `mods/my-agents/clawd.LICENSE`；`clawd-done.gif` 和 `clawd-done/` 改自 clawd-on-desk，依 AGPL-3.0 授權，不適用本 repo 的 LICENSE。
@@ -41,7 +41,7 @@
 **Pane 與底部狀態列（`my-pane`、`my-status`）**
 - Pane 標題列比較安靜：只有資料夾和 agent 狀態，加上 split、zoom、close 按鈕，高 26px。
 - 主畫面上下不留外框空白，只保留左右 4px。
-- 底部狀態列顯示機器、目前焦點終端機的分支（有未 commit 的改動會加 `*`）、在 linked worktree 裡時的 worktree 名稱，以及 agent 數量（幾個需要你）；右邊是 Claude 方案用量的 bar，百分比寫在 bar 裡：**Fable 本週**、**本週（全部模型）**、**5 小時**（沒有資料的不顯示）。跟 claude.ai 一樣，本週的 bar 前段用 Fable 的顏色標出 Fable 用掉的部分。滑上去會顯示重置時間和 Fable 的上限，90% 以上變紅。每 5 分鐘更新一次。
+- 底部狀態列顯示機器、目前焦點終端機的分支（有未 commit 的改動會加 `*`）、在 linked worktree 裡時的 worktree 名稱，以及 agent 數量（幾個需要你）；右邊是 Claude 方案用量的 bar，百分比寫在 bar 裡：**Fable 本週**、**本週（全部模型）**、**5 小時**（沒有資料的不顯示）。跟 claude.ai 一樣，本週的 bar 前段用 Fable 的顏色標出 Fable 用掉的部分。滑上去會顯示重置時間和 Fable 的上限，90% 以上變紅。Herdr 在前景時每 5 分鐘更新一次。
 
 **Claude Code 的 status line（`claude/statusline-command.sh`）**
 - 左邊是資料夾和 GitHub repo，右邊貼齊是 **模型@思考程度** 和 **ctx 剩餘 %**（依剩餘量變綠／黃／紅）。
@@ -86,13 +86,13 @@ Grok 的設定不會動。被取代的檔案都會先備份到 `~/.config/herdr-
 
 | mod | 做什麼 |
 |---|---|
-| `my-agents` | 執行 `terminal-notifier` 發 macOS 通知（沒裝時用 `osascript`），點通知時執行 `herdr-app do agent.focus` 跳到那個 agent；執行 `herdr-app status` 確認右下角提示的數量再關掉；每 5 秒執行 `python3 recap.py`，讀取 `~/.claude/sessions/`、Claude Code 的對話紀錄，以及 `~/.grok/` 的 session，找出最新的 recap 和最後一則回應；opencode 的回應透過 `hc` 和 `opencode api` 從它在跑的 server 讀，用 terminal 標題「OC | <session 標題>」對到 session。每 4 秒執行 `python3 decide.py`：Claude Code 停下來但還有 shell 開著時，把最後一則回應和正在跑的指令（先遮蔽常見的 secret 格式）送到 OpenRouter 的 decision model，這是這個 mod 唯一連網路的地方。key 放在 `~/.config/herdr-app/secrets/openrouter-decider.key`，不在這個 repo 裡；沒有 key 時不做判斷，狀態維持 Herdr 回報的。同一次停下只問一次；每次問的內容和結果都記在 `~/.config/herdr-app/data/my-agents/decisions.log`，沒問的也會記原因，這份 log 不在這個 repo 裡。 |
+| `my-agents` | 執行 `terminal-notifier` 發 macOS 通知（沒裝時用 `osascript`），點通知時執行 `herdr-app do agent.focus` 跳到那個 agent；執行 `herdr-app status` 確認右下角提示的數量再關掉；每 5 秒執行 `python3 recap.py`，讀取 `~/.claude/sessions/`、Claude Code 的對話紀錄，以及 `~/.grok/` 的 session，找出最新的 recap 和最後一則回應；有開 opencode 時，它的回應透過 `hc` 和 `opencode api` 從它在跑的 server 讀，用 terminal 標題「OC | <session 標題>」對到 session。有 agent 剛停下、或已有判斷結果時每 4 秒執行 `python3 decide.py`，其他時候每分鐘一次：Claude Code 停下來但還有 shell 開著時，把最後一則回應和正在跑的指令（先遮蔽常見的 secret 格式）送到 OpenRouter 的 decision model，這是這個 mod 唯一連網路的地方。key 放在 `~/.config/herdr-app/secrets/openrouter-decider.key`，不在這個 repo 裡；沒有 key 時不做判斷，狀態維持 Herdr 回報的。同一次停下只問一次；每次問的內容和結果都記在 `~/.config/herdr-app/data/my-agents/decisions.log`，沒問的也會記原因，這份 log 不在這個 repo 裡。 |
 | `my-gitlab` | 執行 `glab api graphql` 讀取自己的 MR（開著的、7 天內 merge 的、要我 review 的）；確認視窗按下 Close 時，用 `mergeRequestUpdate` 把那個 MR 設成 closed；點擊時執行 `open <網址>`。 |
 | `my-status` | 對焦點終端機的資料夾執行 `git rev-parse`、`git diff-index`（找 worktree 和未 commit 的改動）；Herdr 在前景時每 5 秒一次。 |
 | `my-spaces` | 執行 `git`（status、rev-parse）讀取分支和 worktree；執行 `hc machine ls` 列出其他機器。 |
 | `my-files` | 在這台電腦上點 `.html`／`.htm` 時執行 `open <檔案>`，用預設瀏覽器打開；其他檔案和遠端 space 照舊在面板裡預覽。 |
 | `my-rename` | 重新命名分頁時執行 `python3 suggest.py`：Claude Code 的話讀它 session 的標題、開頭你說的前 3 則（每則最多 600 字）、最近一次 compact 的 summary（最多 3500 字，取頭尾）和最近 8 則訊息（你說的和它回的，每則最多 700 字），請它依整個 session 的主題命名，其他程式讀 terminal 畫面最後一段，先遮蔽常見的 secret 格式，再送到 OpenRouter 的 `anthropic/claude-haiku-5.5`（reasoning effort medium）。key 放在 `~/.config/herdr-app/secrets/openrouter-rename.key`，不在這個 repo 裡；走 OpenRouter 的 BYOK（你在 OpenRouter 設的 Anthropic key，費用由 Anthropic 收）；每次請求的 terminal、建議的名字、秒數、provider、是否 BYOK 和花費記在 `~/.config/herdr-app/data/my-rename/suggest.log`。 |
-| `my-status` | 對焦點終端機的資料夾執行 `git rev-parse`、`git diff-index`（找 worktree 和未 commit 的改動）；Herdr 在前景時每 5 秒一次。另外每 5 分鐘執行 `python3 usage.py`：用 `claude -p --safe-mode --strict-mcp-config` 起一個不讀 CLAUDE.md、skills、plugins、hooks、MCP 的 Claude Code，向它要 `/usage` 的資料（實驗性的 `get_usage` 請求）。不呼叫模型、不耗 token，登入由 Claude Code 自己處理，這個 mod 不碰 token。結果存在 `~/.config/herdr-app/data/my-status/usage.json`。 |
+| `my-status` | 對焦點終端機的資料夾執行 `git rev-parse`、`git diff-index`（找 worktree 和未 commit 的改動）；Herdr 在前景時每 5 秒一次。另外在 Herdr 在前景、上次的資料超過 5 分鐘時執行 `python3 usage.py`：用 `claude -p --safe-mode --strict-mcp-config` 起一個不讀 CLAUDE.md、skills、plugins、hooks、MCP 的 Claude Code，向它要 `/usage` 的資料（實驗性的 `get_usage` 請求）。不呼叫模型、不耗 token，登入由 Claude Code 自己處理，這個 mod 不碰 token。結果存在 `~/.config/herdr-app/data/my-status/usage.json`。 |
 
 ## 已知限制
 

@@ -321,8 +321,9 @@ export default class Spaces extends View {
   }
 
   // Spaces in order, each worktree space moved under its main checkout's.
-  ordered() {
-    const sp = spaces(), ps = panes();
+  // sp: the spaces with my-agents' verdicts applied (liveSpaces), so the rows show them.
+  ordered(sp = spaces()) {
+    const ps = panes();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
     for (const w of sp) if (!this.shown.has(w.id) && ready(w)) this.shown.add(w.id);
     const list = sp.map((w, i) => ({ w, i, g: this.git[where(w, ps)] ?? null }));
@@ -361,8 +362,8 @@ export default class Spaces extends View {
   }
 
   // The rows, under a header per machine once one isn't this computer.
-  grouped(t, collapsed) {
-    const rows = this.ordered();
+  grouped(t, collapsed, sp) {
+    const rows = this.ordered(sp);
     // Full rows carry the rail's half gap above and below too, so crossing the
     // rail's edge (where the title goes) doesn't move any row.
     const draw = (r) => (collapsed ? this.compact(r, t) : div().py(ROW_GAP / 2).child(this.row(r, t)));
@@ -567,6 +568,6 @@ export default class Spaces extends View {
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))))
       .child(v_flex().flex_1().min_h(0).px(8).pb(mini() ? RAIL_EDGE - ROW_GAP / 2 : 14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
-        .children(this.grouped(t, collapsed)));
+        .children(this.grouped(t, collapsed, sp)));
   }
 }

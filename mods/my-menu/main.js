@@ -94,23 +94,21 @@ function shortcut(name, args) {
   return k ? k.keys : "";
 }
 
-// Rename in my-rename, which suggests a name from what the tab's agent (else its
-// first terminal) is doing. Starts from the name the tab bar shows.
-function renameTab(id) {
-  const tab = spaces().flatMap((s) => s.tabs ?? []).find((c) => c.id === id);
-  const inTab = panes().filter((p) => p.tab === id && p.terminal);
-  const term = inTab.find((p) => p.program?.agent) ?? inTab[0];
-  const shown = tab?.named && !/^tb\d+$/.test(tab.name) ? tab.name : term?.title || tab?.name || "";
+// my-tabs hands over the tab's target with the name its bar shows and the terminal to
+// suggest from (its agent, else its first terminal).
+const tabName = (id, target) => target?.name ?? spaces().flatMap((s) => s.tabs ?? []).find((c) => c.id === id)?.name ?? "";
+
+// Rename in my-rename, which suggests a name from what that terminal is doing.
+function renameTab(id, target) {
   openOverlay({ mod: "my-rename", kind: "dialog", width: 420, height: 210,
-    props: { title: "Rename tab", value: shown, terminal: term?.terminal ?? null, command: { name: "tab.rename", args: { id } } } });
+    props: { title: "Rename tab", value: tabName(id, target), terminal: target?.terminal ?? null, command: { name: "tab.rename", args: { id } } } });
 }
 
 // Herdr's confirm dialog before closing; tab.close is told it's confirmed, so the
 // last tab doesn't ask a second time.
 function confirmClose(command, args, target) {
-  const tab = spaces().flatMap((s) => s.tabs ?? []).find((c) => c.id === (args.id ?? target?.id));
   const isTab = command === "tab.close";
-  const name = isTab ? tab?.name : null;
+  const name = isTab ? tabName(args.id, target) : null;
   openOverlay({
     mod: "my-confirm", kind: "dialog", width: 380, height: 170,
     props: {
@@ -144,7 +142,7 @@ export default class Menu extends View {
     closeOverlay(props()?.overlay);
     if (it[1] === "worktree") openOverlay({ mod: "worktree", kind: "dialog", ...(it[2].action === "open" ? { width: 560, height: 480 } : { width: 440, height: 260 }), props: it[2] });
     else if (it[1] === "tab.close" || it[1] === "pane.close") confirmClose(it[1], it[2], props()?.target);
-    else if (it[1] === "tab.rename") renameTab(it[2].id);
+    else if (it[1] === "tab.rename") renameTab(it[2].id, props()?.target);
     else run(it[1], it[2]);
   }
 

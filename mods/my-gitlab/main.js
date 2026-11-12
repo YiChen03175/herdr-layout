@@ -377,7 +377,8 @@ export default class Gitlab extends View {
   }
 
   // A list's title folds it (unless foldable is false); folded, just its count.
-  section(t, id, icon, label, items, row, empty, foldable = true) {
+  // An empty list is just its title, with its 0.
+  section(t, id, icon, label, items, row, foldable = true) {
     const open = !foldable || !this.folded.has(id);
     return v_flex().flex_none()
       .child(h_flex().id(`gl-sec-${id}`).h(28).px(8).mt(6).gap(7).items_center().rounded(6)
@@ -389,7 +390,6 @@ export default class Gitlab extends View {
         .child(div().text_color(t.dim).child(String(items.length)))
         .child(div().flex_1())
         .when(foldable, (el) => el.child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.dim))))
-      .when(open && items.length === 0, (el) => el.child(div().px(8).pl(29).py(4).text_size(12).text_color(t.dim).child(empty)))
       .when(open, (el) => el.children(items.map((mr) => row(t, mr))));
   }
 
@@ -417,9 +417,9 @@ export default class Gitlab extends View {
       .when(!L && !this.error, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Loading…")))
       .when(Boolean(L), (el) => el
         // What waits on you first, and only when something does; always open.
-        .when(L.review.length > 0, (el) => el.child(this.section(t, "review", "eye", "To review", L.review, (t, mr) => this.reviewRow(t, mr), "", false)))
-        .child(this.section(t, "open", "git-pull-request", "Open", L.open, (t, mr) => this.openRow(t, mr), "No open merge requests."))
-        .child(this.section(t, "merged", "merge", "Merged", L.merged, (t, mr) => this.mergedRow(t, mr), "Nothing merged this week.")));
+        .when(L.review.length > 0, (el) => el.child(this.section(t, "review", "eye", "To review", L.review, (t, mr) => this.reviewRow(t, mr), false)))
+        .child(this.section(t, "open", "git-pull-request", "Open", L.open, (t, mr) => this.openRow(t, mr)))
+        .child(this.section(t, "merged", "merge", "Merged", L.merged, (t, mr) => this.mergedRow(t, mr))));
 
     return v_flex().id("gitlab").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)
       .border_1().border_color(t.border).text_color(t.foreground).text_size(13)
