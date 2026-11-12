@@ -229,6 +229,10 @@ def main():
             if not message or len(message) < MIN_MESSAGE:
                 skip(seen, context, "no_message" if not message else "short_message")
                 continue
+            # Without a key nothing can be asked: say so once, rather than an error a minute.
+            if not os.path.exists(KEY_FILE):
+                skip(seen, context, "no_key")
+                continue
             seen.pop(address, None)
             commands = [(pid, command_of(line) or " ".join(c[1] for c in kids.get(pid, []))[:COMMAND_MAX]) for pid, line in shells]
             answer = judge(message, commands, ports_of, cache, context)
