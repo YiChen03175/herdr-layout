@@ -5,23 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, agents, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, settings } from "herdr";
-
-// Status after my-agents' verdicts (shared "agents.effective"): an agent that stopped
-// but is waiting on its shells still counts as working.
-const URGENCY = { blocked: 4, done: 3, working: 2, idle: 1 };
-const mostUrgent = (list) => list.reduce((m, s) => ((URGENCY[s] ?? 0) > (URGENCY[m] ?? 0) ? s : m), null);
-function liveSpaces() {
-  const all = spaces();
-  const over = shared("agents.effective");
-  if (!over || !Object.keys(over).length) return all;
-  const byTab = {};
-  for (const a of agents()) (byTab[a.tab] ??= []).push((a.status === "done" || a.status === "idle") && over[a.address] ? over[a.address] : a.status);
-  return all.map((w) => {
-    const tabs = w.tabs.map((c) => (byTab[c.id] ? { ...c, status: mostUrgent(byTab[c.id]) } : c));
-    return { ...w, tabs, status: mostUrgent(tabs.map((c) => c.status).filter(Boolean)) ?? w.status };
-  });
-}
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, settings } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -92,10 +76,6 @@ const FALLBACK = 60000;
 // What a stored color name looks like on an avatar (the same in every mod
 // that draws space avatars): one strong color per hue, light and dark alike.
 const MARK = { ansi6: "#22a99a", ansi3: "#e3814f", ansi4: "#5b8def", ansi5: "#8b7cf6", ansi2: "#3fae6a", ansi1: "#d9649a" };
-
-export function tone(t, status) {
-  return t[status] ?? t.unknown;
-}
 
 export default class Spaces extends View {
   init(_props, cx) {
@@ -321,7 +301,6 @@ export default class Spaces extends View {
   }
 
   // Spaces in order, each worktree space moved under its main checkout's.
-  // sp: the spaces with my-agents' verdicts applied (liveSpaces), so the rows show them.
   ordered(sp = spaces()) {
     const ps = panes();
     const ready = (w) => this.shown.has(w.id) || where(w, ps) in this.git || Date.now() - (this.born[w.id] ??= Date.now()) > 1500;
@@ -494,13 +473,12 @@ export default class Spaces extends View {
   }
 
   // A rail row: same height as a full row, the avatar on the left, the name when
-  // there's room, a dot on the right only when the space needs you. On the mini
-  // rail: just the avatar, centered, still (agents show status, spaces don't).
+  // there's room. On the mini rail: just the avatar, centered. No status: the
+  // agents' icons show it.
   compact({ w, i, tree }, t) {
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
-    const loud = w.status === "blocked" || w.status === "done";
     const small = mini();
     const avatar = h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(letter(w));
     // On the mini rail the avatar glides to the middle and the rest fades out.
@@ -529,16 +507,14 @@ export default class Spaces extends View {
         .child(avatar))
       .child(div().id(`space-name-${w.id}`).flex_1().min_w(0).truncate().text_color(w.active ? t.foreground : t.muted)
         .opacity(small ? 0 : 1).transition("opacity", FADE)
-        .when(named(), (el) => el.child(w.name)))
-      .when(loud, (el) => el.child(div().id(`space-dot-${w.id}`).size(6).flex_none().rounded(3).bg(tone(t, w.status))
-        .opacity(small ? 0 : 1).transition("opacity", FADE))));
+        .when(named(), (el) => el.child(w.name))));
   }
 
   render() {
     const t = theme();
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
-    const sp = liveSpaces();
+    const sp = spaces();
     const ids = new Set(sp.map(p => p.id));
     const kept = Object.fromEntries(Object.entries(shared("space.colors") ?? {}).filter(([id]) => ids.has(id)));
     let changed = Object.keys(kept).length !== Object.keys(shared("space.colors") ?? {}).length;

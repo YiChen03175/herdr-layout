@@ -357,6 +357,27 @@ export default class Agents extends View {
     return list.map((a) => ((a.status === "done" || a.status === "idle") && over[a.address] ? { ...a, status: over[a.address] } : a));
   }
 
+  // The list with plain terminals (a shell, an editor: no status) in it too, in
+  // space and tab order. They're Archived until you unarchive one by hand; a
+  // sub-agent's terminal stays under its parent.
+  withShells(list, all, paneList, spaceList) {
+    const isAgent = new Set(list.map((a) => a.address));
+    const term = new Map(all.map((x) => [x.address, x]));
+    const at = new Map(spaceList.flatMap((s, i) => s.tabs.map((tab) => [tab.id, { s, i, tab }])));
+    const on = focused()?.pane;
+    const shells = paneList.filter((p) => p.terminal && !isAgent.has(p.terminal) && at.has(p.tab)
+      && !term.get(p.terminal)?.parent && (term.get(p.terminal)?.state ?? "live") === "live")
+      .map((p) => {
+        const { s, tab } = at.get(p.tab), x = term.get(p.terminal);
+        return { address: p.terminal, pane: p.pane, space: s.id, space_name: s.name, tab: p.tab, tab_index: tab.index,
+          tab_name: tab.name, status: "idle", app: null, program: p.program, title: p.title, seq: 0,
+          pinned: Boolean(x?.labels?.["herdr.pinned"]), focused: p.pane === on, shell: true, created: x?.created_ms };
+      });
+    if (!shells.length) return list;
+    const order = (a) => at.get(a.tab)?.i ?? spaceList.length;
+    return [...list, ...shells].sort((x, y) => order(x) - order(y) || x.tab_index - y.tab_index);
+  }
+
   // Starts holding agents that just stopped. Runs from render too: the redraw for the
   // stop comes before the next timer tick, and would show them done for a moment.
   catchStops(list) {
@@ -622,7 +643,8 @@ export default class Agents extends View {
     for (const a of list) {
       const s = a.status === "done" ? "idle" : a.status;
       if (this.changed[a.address]?.s === s) continue;
-      this.changed[a.address] = { s, at: now };
+      // A plain terminal never changes state: its time is when it started.
+      this.changed[a.address] = { s, at: (a.shell && a.created) || now };
       dirty = true;
     }
     if (!dirty) return;
@@ -790,10 +812,13 @@ export default class Agents extends View {
     });
   }
 
-  subRow(t, s, shown, compact) {
+  subRow(t, s, shown) {
     const k = s.t;
     const st = kidStatus(k, this.listed);
-    const pic = icon(k.program, 14, t.foreground);
+    // The icon is the status, as on an agent's row: Clawd, or a hop / pulse.
+    const gif = clawdOf({ program: k.program, status: st });
+    if (gif) this.gifs++;
+    const pic = gif ? clawdPic(gif, 14) : icon(k.program, 14, t.foreground);
     const on = k.address === shown;
     return h_flex()
       .id(`sub-${k.address}`)
@@ -811,20 +836,9 @@ export default class Agents extends View {
       .children(s.lines.map(l => div().self_start().mt(-4).w(9).h(17).mr(4).flex_none()
         .when(Boolean(l), el => el.border_l(1.5).border_color(t.input))
         .when(l === "└" || l === "├", el => el.border_b(1.5).rounded_bl(6))))
-      .when(Boolean(pic), el => el.child(div().mr(8).child(pic)))
-      .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address))
-      .child(this.status(t, { status: st }, compact));
-  }
-
-  // compact: a ! for blocked where a header already says "Needs you".
-  status(t, a, compact = false) {
-    const color = t[a.status] ?? t.dim;
-    if (a.status === "working") return svg("mods/workspace-chrome/spinner.svg").size(12).mx(1).flex_none().text_color(t.working).spin(900);
-    if (a.status === "blocked" && compact) return div().size(14).flex_none().rounded(4).bg(alpha(t.blocked, "26")).text_size(10.5).font_bold().text_color(t.blocked).flex().items_center().justify_center().child("!");
-    if (a.status === "blocked") return div().flex_none().px(6).h(18).rounded(5).bg(alpha(t.blocked, "26")).text_size(10.5).font_semibold().text_color(t.blocked).flex().items_center().child("Needs you");
-    // Idle: a ring; done: a dot.
-    if (a.status === "idle") return div().size(7).mx(3).flex_none().rounded(4).border(1.5).border_color(t.idle ?? t.dim);
-    return div().size(7).mx(3).flex_none().rounded(4).bg(a.status === "done" ? color : alpha(t.dim, "00"));
+      .when(Boolean(pic), el => el.child(div().mr(8).when(!gif && st === "working", (el) => el.loop("opacity", PULSE))
+        .child(div().when(!gif && st === "blocked", (el) => el.relative().loop("top", BOUNCE)).child(pic))))
+      .child(div().flex_1().truncate().text_color(on ? t.foreground : t.muted).child(k.name || k.template || k.program?.name || k.address));
   }
 
   // Which Clawd (or null: the icon) to draw for an agent, and its opacity. On a
@@ -857,11 +871,14 @@ export default class Agents extends View {
     const raw = agents();
     this.catchStops(raw);
     this.look(raw);
-    let list = this.effective(raw);
+    // One read each of the host's lists: every read copies the whole list into JS.
+    const all = terminals();
+    const paneList = panes();
+    const spaceList = spaces();
+    let list = this.withShells(this.effective(raw), all, paneList, spaceList);
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     // Fades of agents that are gone.
     if (this.pics) for (const k of this.pics.keys()) if (!this.listed.has(k)) this.pics.delete(k);
-    const all = terminals();
     this.migratePins(all);
     const shown = focused()?.agent;
     const now = Date.now();
@@ -879,6 +896,7 @@ export default class Agents extends View {
       if (a.pinned) return false;
       const m = marks[a.address];
       if (m && this.since(a) <= m.at) return m.on;
+      if (a.shell) return true;
       return !a.focused && a.status === "idle" && now - this.since(a) >= ARCHIVE_AFTER;
     };
     const archivedSet = new Set(list.filter(isArchived).map((a) => a.address));
@@ -890,14 +908,14 @@ export default class Agents extends View {
     if (list.length && Object.keys(marks).some((k) => !this.listed.has(k))) {
       setShared("agents.archived", Object.fromEntries(Object.entries(marks).filter(([k]) => this.listed.has(k))));
     }
-    setAgentOrder(list.map((a) => a.address));
+    setAgentOrder(list.filter((a) => !a.shell).map((a) => a.address));
 
     const withKids = (a, i) => {
       const subs = collapsed ? [] : subsOf.get(a.address);
       // Full rows get the rail rows' half gap too: crossing the rail's edge moves nothing.
       const r = collapsed ? row(a, i, subs) : div().py(ROW_GAP / 2).child(row(a, i, subs));
       if (this.folded.has(a.address)) return [r];
-      return [r, ...subs.map((s) => this.subRow(t, s, shown, byPriority))];
+      return [r, ...subs.map((s) => this.subRow(t, s, shown))];
     };
 
     // The fold chevron; folded, the count too, colored by the most urgent one.
@@ -929,8 +947,8 @@ export default class Agents extends View {
     // agent's own title, never an automatic tab number unless two rows would
     // otherwise read the same.
     // Read the pane snapshot once: every host read copies the whole list into JS.
-    const leads = leadPanes(panes());
-    const tabLabels = new Map(spaces().flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));
+    const leads = leadPanes(paneList);
+    const tabLabels = new Map(spaceList.flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));
     const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || "")]));
     const label = (a) => labels.get(a.address);
     const detail = new Map(list.map(a => [a.address, /^\d+$/.test(label(a)) ? null : label(a)]));
@@ -955,17 +973,16 @@ export default class Agents extends View {
       const more = detail.get(a.address);
       // An agent on another machine (`vps/t7`) says which.
       const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
-      // A rail row: same height as a full row, the icon on the left, the status on
-      // the right, and the name between them when there's room.
-      // A rail row (narrow sidebar): icon, name, status. On the mini rail the icon
-      // glides to the middle, name and status fade out, and the icon itself shows
-      // the status (blocked hops, working pulses, idle fades).
+      // A rail row (narrow sidebar): as tall as a full row, the icon, then the name.
+      // The icon is the status, as on a full row (blocked hops, working pulses).
+      // On the mini rail the icon glides to the middle, the name fades out, and an
+      // idle icon fades too.
       if (collapsed) {
         const small = mini();
         const short = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
         // Clawd shows the status itself: no hop, pulse or fade on top.
-        const hop = small && a.status === "blocked" && !gif;
-        const pulse = small && a.status === "working" && !gif;
+        const hop = a.status === "blocked" && !gif;
+        const pulse = a.status === "working" && !gif;
         const dx = small ? (sidebarW() - 16 - 18) / 2 - 8 : 0;
         // Each row carries half the gap above and below: the same space between
         // rows everywhere, even across folded titles, and above the first one.
@@ -995,9 +1012,7 @@ export default class Agents extends View {
             .child(this.recapDot(t, a)))
           .child(div().id(`ag-name-${a.address}`).flex_1().min_w(0).truncate().text_color(a.status === "idle" && !a.focused ? t.muted : t.foreground)
             .opacity(small ? 0 : 1).transition("opacity", FADE)
-            .when(named(), (el) => el.child(short)))
-          .child(h_flex().id(`ag-st-${a.address}`).w(16).flex_none().items_center().justify_center()
-            .opacity(small ? 0 : 1).transition("opacity", FADE).child(this.status(t, a, true))), full, place(a)));
+            .when(named(), (el) => el.child(short))), full, place(a)));
       }
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
@@ -1068,7 +1083,8 @@ export default class Agents extends View {
       if (!a.pinned) groups.at(-1).members.push(a);
     }
 
-    // A group's header; it folds the group. Folded, it says how many and the most urgent state.
+    // A group's header; it folds the group. Folded, it says how many, and its title
+    // takes the colour of the most urgent agent in it.
     const header = (g) => {
       const open = !this.folded.has(g.id);
       const top = g.members.reduce((m, a) => ((RANK[a.status] ?? 0) > (RANK[m] ?? 0) ? a.status : m), null);
@@ -1087,12 +1103,11 @@ export default class Agents extends View {
           open ? this.folded.add(g.id) : this.folded.delete(g.id);
           cx.notify();
         })
-        .child(div().min_w(0).truncate().text_color(t[g.status] ?? t.dim).child(g.label))
+        .child(div().min_w(0).truncate().text_color(t[g.status ?? (!open && top !== "idle" ? top : null)] ?? t.dim).child(g.label))
         // On the rail the title gets the room; the count goes.
         .when(!collapsed && (byPriority || !open), (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))
         .child(div().flex_1())
         .when(!open, (el) => el
-          .when(!byPriority && top && top !== "idle", (el) => el.child(this.status(t, { status: top }, true)))
           .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
     };
     // On the rail a title folds away (height to 0, fading) for the mini rail
