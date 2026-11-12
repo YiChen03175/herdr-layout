@@ -139,7 +139,7 @@
                           "id": "files",
                           "type": "block",
                           "content": {
-                            "mod": "files"
+                            "mod": "my-files"
                           }
                         },
                         {
@@ -163,12 +163,14 @@
                   "size": {
                     "px": 368
                   },
-                  "min": 280,
                   "max": 900,
                   "hidden": true
                 }
               ],
-              "padding": [0, 4],
+              "padding": [
+                0,
+                4
+              ],
               "gap": 8,
               "background": "background"
             },

@@ -8,7 +8,7 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 APP="${HERDR_HOME:-$HOME/.config/herdr-app}"
-MODS="my-agents my-chrome my-gitlab my-pane my-spaces my-status my-tabs"
+MODS="my-agents my-chrome my-confirm my-files my-gitlab my-menu my-pane my-rename my-spaces my-status my-tabs"
 LAYOUT="my-main"
 CLAUDE=1
 

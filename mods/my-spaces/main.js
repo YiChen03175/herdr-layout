@@ -5,7 +5,23 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, settings } from "herdr";
+import { spaces, agents, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, settings } from "herdr";
+
+// Status after my-agents' verdicts (shared "agents.effective"): an agent that stopped
+// but is waiting on its shells still counts as working.
+const URGENCY = { blocked: 4, done: 3, working: 2, idle: 1 };
+const mostUrgent = (list) => list.reduce((m, s) => ((URGENCY[s] ?? 0) > (URGENCY[m] ?? 0) ? s : m), null);
+function liveSpaces() {
+  const all = spaces();
+  const over = shared("agents.effective");
+  if (!over || !Object.keys(over).length) return all;
+  const byTab = {};
+  for (const a of agents()) (byTab[a.tab] ??= []).push((a.status === "done" || a.status === "idle") && over[a.address] ? over[a.address] : a.status);
+  return all.map((w) => {
+    const tabs = w.tabs.map((c) => (byTab[c.id] ? { ...c, status: mostUrgent(byTab[c.id]) } : c));
+    return { ...w, tabs, status: mostUrgent(tabs.map((c) => c.status).filter(Boolean)) ?? w.status };
+  });
+}
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -521,7 +537,7 @@ export default class Spaces extends View {
     const t = theme();
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
-    const sp = spaces();
+    const sp = liveSpaces();
     const ids = new Set(sp.map(p => p.id));
     const kept = Object.fromEntries(Object.entries(shared("space.colors") ?? {}).filter(([id]) => ids.has(id)));
     let changed = Object.keys(kept).length !== Object.keys(shared("space.colors") ?? {}).length;

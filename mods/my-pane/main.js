@@ -5,7 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home } from "herdr";
+import { panes, props, run, theme, home, shared } from "herdr";
 
 // #rrggbb plus an alpha byte; other forms pass through.
 const alpha = (color, a) => /^#[0-9a-f]{6}$/i.test(color ?? "") ? color + a : color;
@@ -41,7 +41,9 @@ export default class Pane extends View {
     const t = theme();
     const p = this.me();
     if (!p) return div();
-    const st = p.status;
+    // my-agents' verdict: an agent that stopped but is waiting on its shells still works.
+    const verdict = p.status === "done" || p.status === "idle" ? shared("agents.effective")?.[p.terminal] : null;
+    const st = verdict ?? p.status;
     const pane = p.pane;
     return h_flex()
       .id(`pane-head-${pane}`)
