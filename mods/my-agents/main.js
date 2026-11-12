@@ -39,6 +39,8 @@ const IDLE_OPACITY = 0.55;
 // Folding to the mini rail and back: titles collapse, icons glide, the rest fades.
 const SLIDE = { duration: 200, easing: "ease-out" };
 const FADE = { duration: 160, easing: "ease-out" };
+// A re-sort: each row that moved slides from where it was to its new place.
+const MOVE = { duration: 300, easing: "ease-in-out" };
 // Space between rail rows (and above the first, once the titles fold away).
 const ROW_GAP = 2;
 // Mini rail: icon squares sit this far from the sidebar's sides and section edges.
@@ -659,6 +661,43 @@ export default class Agents extends View {
     return RANK[a.status] ?? 0;
   }
 
+  // Rows that jumped to a new place since the last draw are drawn once where they
+  // were, then slide to where they are (MOVE). items: [key, height, eases] in list
+  // order. A height that eases on its own (a slot opening, a rail title folding)
+  // counts as it was, so what it pushes glides with it and isn't slid twice.
+  moves(items, cx) {
+    const prev = this.lay;
+    this.lay = { y: new Map(), h: new Map() };
+    let at = 0, was = 0;
+    const offsets = {};
+    for (const [key, h, eases] of items) {
+      this.lay.y.set(key, at);
+      this.lay.h.set(key, h);
+      at += h;
+      if (!prev?.y.has(key)) { was += h; continue; }
+      const off = prev.y.get(key) - was;
+      if (Math.abs(off) > 0.5) offsets[key] = off;
+      was += eases ? prev.h.get(key) : h;
+    }
+    if (!Object.keys(offsets).length) return;
+    const flip = (this.flip = { offsets, slide: false });
+    cx.timer.after(16, (cx) => {
+      if (this.flip !== flip) return;
+      flip.slide = true;
+      cx.notify();
+      cx.timer.after(MOVE.duration + 50, () => { if (this.flip === flip) this.flip = null; });
+    });
+  }
+
+  // A row's element, drawn where moves() says; it slides back to its place. The
+  // jump is a zero-length transition, not none: without one the element wouldn't
+  // remember where it was drawn, and the slide would have nowhere to start from.
+  moved(key, el) {
+    const f = this.flip;
+    const jump = f && !f.slide;
+    return el.relative().top(jump ? f.offsets[key] ?? 0 : 0).transition("top", jump ? { duration: 0 } : MOVE);
+  }
+
   sortMenu(t) {
     const on = sortOf().id;
     return v_flex()
@@ -1067,20 +1106,29 @@ export default class Agents extends View {
     // The mini rail has no titles: every agent, in the same order, folded groups too.
     // A slot is a row's place that slides between 0 and its height. keep: its rows
     // stay while it shuts (else they go at once and only the space slides).
+    const slotH = (a, open) => (open ? ROW_H + (collapsed || this.folded.has(a.address) ? 0 : subsOf.get(a.address).length * SUB_H) : 0);
+    const titleH = collapsed && mini() ? ROW_GAP / 2 : 30;
+    const shownIn = (g) => !this.folded.has(g.id) || (collapsed && mini());
+    // The list from the top, for moves(): the pinned area, then each group.
+    this.moves([
+      ...live.map((a) => [`ps-${a.address}`, slotH(a, a.pinned), true]),
+      ["pin-line", pinned.length ? 14 : 0, true],
+      ...groups.flatMap((g) => [...(g.members.length ? [[`agh-${g.id}`, titleH, collapsed]] : []),
+        ...(shownIn(g) ? g.all.map((a) => [`gs-${a.address}`, slotH(a, !a.pinned), true]) : [])]),
+    ], cx);
     const slot = (id, open, a, keep = false) => {
       const parts = open || keep ? withKids(a) : [];
-      const h = open ? ROW_H + (collapsed ? 0 : (parts.length - 1) * SUB_H) : 0;
       // The clip reaches the list's edges (-8/+8): the mini rail's square is wider than its row.
-      return div().id(id).flex_none().mx(-8).px(8).overflow_hidden().h(h).opacity(open ? 1 : 0)
-        .transition("height", SLIDE).transition("opacity", FADE).children(parts);
+      return this.moved(id, div().id(id).flex_none().mx(-8).px(8).overflow_hidden().h(slotH(a, open)).opacity(open ? 1 : 0)
+        .transition("height", SLIDE).transition("opacity", FADE).children(parts));
     };
-    const rows = groups.flatMap((g) => [...(g.members.length ? [foldAway(`agh-${g.id}`, 30, header(g))] : []),
-      ...(this.folded.has(g.id) && !(collapsed && mini()) ? [] : g.all.map((a) => slot(`gs-${a.address}`, !a.pinned, a)))]);
+    const rows = groups.flatMap((g) => [...(g.members.length ? [this.moved(`agh-${g.id}`, foldAway(`agh-${g.id}`, 30, header(g)))] : []),
+      ...(shownIn(g) ? g.all.map((a) => slot(`gs-${a.address}`, !a.pinned, a)) : [])]);
     const pinInk = settings().dark === false ? t.foreground : "#ffffff";
     // The pinned area: at the top, a line under it. The + row ends the list (above Archived).
     const pinRows = [...live.map((a) => slot(`ps-${a.address}`, a.pinned, a)),
       // The line under it, with a small solid pin in its middle (white, see-through).
-      div().id("pin-line").flex_none().mx(-8).px(collapsed && mini() ? 9 : 20).overflow_hidden().h(pinned.length ? 14 : 0).transition("height", SLIDE)
+      this.moved("pin-line", div().id("pin-line")).flex_none().mx(-8).px(collapsed && mini() ? 9 : 20).overflow_hidden().h(pinned.length ? 14 : 0).transition("height", SLIDE)
         // Line and pin share one color; on the mini rail the line reaches into the list's padding.
         .child(h_flex().h(14).gap(1).items_center().opacity(0.2)
           .child(div().flex_1().h(1).rounded_full().bg(pinInk))
