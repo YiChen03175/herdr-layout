@@ -17,7 +17,7 @@
 - GitLab / Files / Changes 面板**每個分頁（session）各自記住**開或關；切換分頁時面板會用約 0.24 秒的動畫滑開或收合。寬度所有分頁共用，最窄 280px。也可以用 `herdr-app do my-tabs.gitlab`／`.files`／`.changes`／`.close` 開關面板。
 
 **右側 GitLab 面板（`my-gitlab`）**
-- 分頁列右上多一個 GitLab，排在 Files、Changes 左邊，打開依序是：To review（指定我 review 而且我還沒 review 的，有才出現、不能收合）、Open（我開的還沒 merge 的 MR，不含 closed）、Merged（最近 7 天 merge 的）。
+- 分頁列右上多一個 GitLab，排在 Files、Changes 左邊，打開依序是：To review（指定我 review 而且我還沒 review 的，加上 Slack 上 tag 我的訊息裡貼的 MR——還開著、不是我開的、我還沒 approve 的；有才出現、不能收合）、Open（我開的還沒 merge 的 MR，不含 closed）、Merged（最近 7 天 merge 的）。
 - 每一列有標題、專案、`!編號`，點一下用瀏覽器打開。前面一個圖示代表狀態：紅色警告是 conflict；✗ / ● 是 pipeline 失敗 / 執行中；黃色圈圈勾是 CI 過了但還沒 approve；綠色 ✓ 是 CI 過了也 approve 了。時間在右邊，Merged 預設收起來。標題是 MR 所在的組織名稱（例如 maxnion），右上角的「↻ 3m」點了會重新整理。
 - 在 Open 的 MR 上按右鍵：用瀏覽器打開，或關閉這個 MR（會先跳確認視窗，Enter 確認、Esc 取消；關掉的 MR 之後還能在 GitLab 上重新打開）。
 - 有新的東西（新指派給我 review 的 MR，或我開的 MR 被 approve）時，GitLab 按鈕的字變亮，前面的 icon 換成新的數量（跟 icon 一樣高），切換時淡入淡出、寬度平滑變化。打開 GitLab 面板就算看過，按鈕恢復原樣；同一個 MR 之後再被指派或再被 approve 會再亮。區塊是空的時只顯示標題和 0。
@@ -62,6 +62,7 @@
 - `python3`（Recap、通知圖示和安裝程式會用到）、`git`、`jq`（Claude Code 的 status line 會用到）。
 - 點通知跳回 agent 要 `terminal-notifier`（`brew install terminal-notifier`），第一次要在「系統設定 → 通知」允許它。
 - GitLab 面板要 [`glab`](https://gitlab.com/gitlab-org/cli) 並登入過（`brew install glab && glab auth login`）。
+- （選用）Slack 上 tag 我的 MR 也進 To review：在 api.slack.com/apps 用 manifest 建一個 app，user scope 至少要 `search:read`，裝到工作區後把 **User OAuth Token**（`xoxp-`）存成 `~/.config/herdr-app/secrets/slack.token`（`pbpaste > … && chmod 600 …`）。沒有這個檔案時就只看 GitLab。
 
 ## 安裝
 
@@ -90,7 +91,7 @@ Grok 的設定不會動。被取代的檔案都會先備份到 `~/.config/herdr-
 | mod | 做什麼 |
 |---|---|
 | `my-agents` | 執行 `terminal-notifier` 發 macOS 通知（沒裝時用 `osascript`），點通知時執行 `herdr-app do agent.focus` 跳到那個 agent；執行 `herdr-app status` 確認右下角提示的數量再關掉；每 5 秒執行 `python3 recap.py`，讀取 `~/.claude/sessions/`、Claude Code 的對話紀錄，以及 `~/.grok/` 的 session，找出最新的 recap 和最後一則回應；有開 opencode 時，它的回應透過 `hc` 和 `opencode api` 從它在跑的 server 讀，用 terminal 標題「OC | <session 標題>」對到 session。有 agent 剛停下、或已有判斷結果時每 4 秒執行 `python3 decide.py`，其他時候每分鐘一次：Claude Code 停下來但還有 shell 開著時，把最後一則回應和正在跑的指令（先遮蔽常見的 secret 格式）送到 OpenRouter 的 decision model，這是這個 mod 唯一連網路的地方。key 放在 `~/.config/herdr-app/secrets/openrouter-decider.key`，不在這個 repo 裡；沒有 key 時不做判斷，狀態維持 Herdr 回報的。同一次停下只問一次；每次問的內容和結果都記在 `~/.config/herdr-app/data/my-agents/decisions.log`，沒問的也會記原因，這份 log 不在這個 repo 裡。 |
-| `my-gitlab` | 執行 `glab api graphql` 讀取自己的 MR（開著的、7 天內 merge 的、要我 review 的）；確認視窗按下 Close 時，用 `mergeRequestUpdate` 把那個 MR 設成 closed；點擊時執行 `open <網址>`。 |
+| `my-gitlab` | 執行 `glab api graphql` 讀取自己的 MR（開著的、7 天內 merge 的、要我 review 的）；跟著每次更新執行 `python3 slack.py`：有 `~/.config/herdr-app/secrets/slack.token`（不在這個 repo 裡）時，用 Slack 的 `search.messages` 找最近 7 天 tag 我的訊息（不含私訊），取出裡面的 GitLab MR 網址，再用 `glab api graphql` 查它們的狀態；確認視窗按下 Close 時，用 `mergeRequestUpdate` 把那個 MR 設成 closed；點擊時執行 `open <網址>`。 |
 | `my-status` | 對焦點終端機的資料夾執行 `git rev-parse`、`git diff-index`（找 worktree 和未 commit 的改動）；Herdr 在前景時每 5 秒一次。 |
 | `my-spaces` | 執行 `git`（status、rev-parse）讀取分支和 worktree；執行 `hc machine ls` 列出其他機器。 |
 | `my-files` | 在這台電腦上點 `.html`／`.htm` 時執行 `open <檔案>`，用預設瀏覽器打開；其他檔案和遠端 space 照舊在面板裡預覽。 |

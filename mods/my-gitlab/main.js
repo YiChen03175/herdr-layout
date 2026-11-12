@@ -2,7 +2,9 @@
 // GitLab button): my merge requests through `glab`, in three lists:
 //   Open        MRs I opened that aren't merged or closed
 //   Merged      MRs I opened that were merged in the last MERGED_DAYS days
-//   To review   open MRs where I'm a requested reviewer and haven't reviewed yet
+//   To review   open MRs where I'm a requested reviewer and haven't reviewed yet,
+//               and open ones linked where someone mentioned me on Slack (slack.py)
+//               that aren't mine and I haven't approved
 // Click a row to open it in the browser; right-click an Open one for a menu that
 // can close it (after a confirm dialog). The tab bar's button lights up with a count
 // of what's new (shared "my-gitlab.new", see publishNews).
@@ -18,7 +20,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, theme, layout, shared, setShared, props, openOverlay, closeOverlay } from "herdr";
+import { exec, theme, layout, shared, setShared, props, openOverlay, closeOverlay, appHome } from "herdr";
 
 const ICON = (name) => `mods/my-gitlab/${name}.svg`;
 const MERGED_DAYS = 7;
@@ -105,6 +107,34 @@ async function graphql(query, vars = {}) {
   const body = JSON.parse(r.stdout);
   if (body.errors?.length) throw new Error(body.errors.map((e) => e.message).join("; "));
   return body.data;
+}
+
+// Merge requests linked in Slack messages that mention me: [{ path, iid, at }]
+// from slack.py, [] without a token or when Slack can't be reached.
+async function slackRefs() {
+  try {
+    const r = await exec("python3", [`${appHome()}/mods/my-gitlab/slack.py`], { timeout: 30000 });
+    return r.code === 0 ? JSON.parse(r.stdout || "[]") : [];
+  } catch { return []; }
+}
+
+// Those of them still open, not mine and not approved by me, as To review rows.
+const SLACK_MR = `iid title webUrl state draft updatedAt detailedMergeStatus conflicts
+  author { username name } project { name namespace { fullName } } headPipeline { status }
+  approvedBy { nodes { username } }`;
+// GitLab caps a query's complexity (250): about ten of these fit in one, so they go
+// in batches, side by side.
+const SLACK_BATCH = 8;
+async function slackReviews(refs, username) {
+  const batches = [];
+  for (let i = 0; i < refs.length; i += SLACK_BATCH) batches.push(refs.slice(i, i + SLACK_BATCH));
+  const found = await Promise.all(batches.map(async (batch) => {
+    const data = await graphql(`query { ${batch.map((r, i) =>
+      `m${i}: project(fullPath: ${JSON.stringify(r.path)}) { mergeRequest(iid: ${JSON.stringify(r.iid)}) { ${SLACK_MR} } }`).join("\n")} }`);
+    return batch.map((_, i) => data[`m${i}`]?.mergeRequest);
+  }));
+  return found.flat().filter((mr) => mr?.state === "opened"
+    && mr.author?.username !== username && !mr.approvedBy?.nodes?.some((n) => n.username === username));
 }
 
 function find(node, id) {
@@ -214,11 +244,18 @@ export default class Gitlab extends View {
     cx.spawn(async (cx) => {
       try {
         const after = new Date(Date.now() - MERGED_DAYS * 86400000).toISOString();
-        const me = (await graphql(QUERY, { mergedAfter: after })).currentUser;
-        this.lists = { open: me.open.nodes, merged: me.merged.nodes, review: me.review.nodes };
+        const [data, refs] = await Promise.all([graphql(QUERY, { mergedAfter: after }), slackRefs()]);
+        const me = data.currentUser;
+        // Slack's join To review; if they can't be looked up, GitLab's still show.
+        let fromSlack = [];
+        try { fromSlack = await slackReviews(refs, me.username); } catch {}
+        const asked = new Set(me.review.nodes.map((mr) => mr.webUrl));
+        const review = [...me.review.nodes, ...fromSlack.filter((mr) => !asked.has(mr.webUrl))]
+          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt));
+        this.lists = { open: me.open.nodes, merged: me.merged.nodes, review };
         // The panel's title: the organization most of these MRs are in (its top-level group).
         const orgs = {};
-        for (const mr of [...me.open.nodes, ...me.merged.nodes, ...me.review.nodes]) {
+        for (const mr of [...me.open.nodes, ...me.merged.nodes, ...review]) {
           const org = mr.project?.namespace?.fullName?.split(" / ")[0];
           if (org) orgs[org] = (orgs[org] ?? 0) + 1;
         }
