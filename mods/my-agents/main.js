@@ -221,6 +221,7 @@ export default class Agents extends View {
     const nativeBefore = this.nativeStatus;
     const raw = agents();
     const { closing, released } = this.holdStops(cx, raw);
+    this.look(raw);
     const list = this.effective(raw);
     const prev = this.macStatus;
     this.macStatus = Object.fromEntries(list.map((a) => [a.address, a.status]));
@@ -399,9 +400,36 @@ export default class Agents extends View {
     return { closing, released };
   }
 
+  // Looking at an agent doesn't change what it shows: one that was done or needed you
+  // stays so until you leave it (Herdr turns done into idle the moment you look).
+  // Only the agent itself moving shows at once: working, or done / needing you again.
+  look(list) {
+    const base = this.baseMap ?? {};
+    const before = this.lastShown ?? {};
+    this.lastShown = Object.fromEntries(list.map((a) => [a.address,
+      (a.status === "done" || a.status === "idle") && base[a.address] ? base[a.address] : a.status]));
+    const cur = list.find((a) => a.focused);
+    let next = null;
+    if (cur) {
+      const now = this.lastShown[cur.address];
+      // Arriving: what it showed just before the click; staying: what's kept.
+      const kept = cur.address === this.visit?.address ? this.visit.status : before[cur.address];
+      const status = now === "working" ? null
+        : now === "blocked" || now === "done" ? now
+        : kept === "blocked" || kept === "done" ? kept : null;
+      next = { address: cur.address, status };
+    }
+    if (next?.address === this.visit?.address && next?.status === this.visit?.status) return;
+    this.visit = next;
+    this.publishEffective();
+  }
+
   publishEffective() {
-    const map = { ...this.decisions };
+    let map = { ...this.decisions };
     for (const k of Object.keys(this.holds)) map[k] = "working";
+    this.baseMap = map;
+    const v = this.visit;
+    if (v?.status && map[v.address] !== "working") map = { ...map, [v.address]: v.status };
     this.effectiveMap = map;
     const raw = JSON.stringify(map);
     if (raw === this.effectiveRaw) return;
@@ -626,18 +654,9 @@ export default class Agents extends View {
     return this.changed[a.address]?.at ?? 0;
   }
 
-  // Looking at a done agent makes it idle; it stays with Done until you leave
-  // it rather than drop away under you. Any other change moves it at once.
-  hold(list) {
-    const cur = list.find((a) => a.focused);
-    const same = cur && cur.address === this.held?.address;
-    // Arriving, or any change but done turning idle, sets what it was.
-    if (!same || cur.status !== "idle") this.held = cur ? { address: cur.address, rank: RANK[cur.status] ?? 0 } : null;
-  }
-
+  // A looked-at agent keeps its status until you leave it (look), so its place too.
   rank(a) {
-    const sawDone = a.address === this.held?.address && this.held.rank === RANK.done && a.status === "idle";
-    return sawDone ? RANK.done : RANK[a.status] ?? 0;
+    return RANK[a.status] ?? 0;
   }
 
   sortMenu(t) {
@@ -798,6 +817,7 @@ export default class Agents extends View {
     const sort = sortOf();
     const raw = agents();
     this.catchStops(raw);
+    this.look(raw);
     let list = this.effective(raw);
     this.listed = new Map(list.map((a) => [a.address, a.status]));
     // Fades of agents that are gone.
@@ -807,7 +827,6 @@ export default class Agents extends View {
     const shown = focused()?.agent;
     const now = Date.now();
     this.track(list, now);
-    this.hold(list);
     const byPriority = sort.id === "priority";
     const kidsOf = new Map();
     for (const k of all) if (k.parent && k.state === "live") kidsOf.set(k.parent, [...(kidsOf.get(k.parent) ?? []), k]);
