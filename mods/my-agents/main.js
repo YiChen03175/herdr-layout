@@ -78,9 +78,9 @@ const RECAP_DELAY = 300; // how long the pointer rests on a row before the card 
 const HOVER_POLL = 80;
 const RECAP_W = 300;
 const CARD_LINE_H = 12.5 * 1.5; // one line of a card's text
-// Idle this long, an agent moves to Archived at the list's bottom (right-click: by hand).
+// Idle this long, an agent moves to Standby at the list's bottom (right-click: by hand).
 const ARCHIVE_AFTER = 6 * 3600000;
-// Archived shows its newest few; a button above them unfolds the rest upward.
+// Standby shows its newest few; a button above them unfolds the rest upward.
 const ARCHIVE_SHOWN = 3;
 const ROW_H = 30 + 2, SUB_H = 26; // a row with its half gaps; a sub-agent row
 // Popups from the sidebar (the + menu, a recap) open just clear of its edge, their
@@ -358,7 +358,7 @@ export default class Agents extends View {
   }
 
   // The list with plain terminals (a shell, an editor: no status) in it too, in
-  // space and tab order. They're Archived until you unarchive one by hand; a
+  // space and tab order. They're in Standby until you take one out by hand; a
   // sub-agent's terminal stays under its parent.
   withShells(list, all, paneList, spaceList) {
     const isAgent = new Set(list.map((a) => a.address));
@@ -746,8 +746,8 @@ export default class Agents extends View {
         .when(s.id === on, (el) => el.child(svg("mods/workspace-chrome/check.svg").size(14).flex_none().text_color(t.foreground)))));
   }
 
-  // Right-click on a row: archive / unarchive, pin / unpin. A by-hand choice lasts
-  // until the agent's state next changes (then 6 hours idle archives it again).
+  // Right-click on a row: into / out of Standby, pin / unpin. A by-hand choice lasts
+  // until the agent's state next changes (then 6 hours idle puts it there again).
   agentMenu(t) {
     const m = props().agentMenu;
     const item = (id, icon, label, act) => h_flex().id(id).h(31).px(8).gap(9).rounded(7).items_center()
@@ -762,8 +762,8 @@ export default class Agents extends View {
     };
     return v_flex().w_full().p(5).bg(t.popover).text_size(12.8)
       .child(m.archived
-        ? item("am-unarchive", "my-chrome/archive", "Unarchive", () => setArchived(false))
-        : item("am-archive", "my-chrome/archive", "Archive", () => { if (m.pinned) run("terminal.pin", { terminal: m.address, pinned: false }); setArchived(true); }))
+        ? item("am-unarchive", "my-agents/moon", "Take out of Standby", () => setArchived(false))
+        : item("am-archive", "my-agents/moon", "Move to Standby", () => { if (m.pinned) run("terminal.pin", { terminal: m.address, pinned: false }); setArchived(true); }))
       .child(item("am-pin", `workspace-chrome/${m.pinned ? "pin-off" : "pin"}`, m.pinned ? "Unpin" : "Pin to the top", () => {
         run("terminal.pin", { terminal: m.address, pinned: !m.pinned });
         if (!m.pinned && m.archived) setArchived(false);
@@ -890,7 +890,7 @@ export default class Agents extends View {
     const urgency = new Map(list.map((a) => [a.address, Math.max(this.rank(a), ...subsOf.get(a.address).map((s) => RANK[kidStatus(s.t, this.listed)] ?? 0))]));
     const rankOf = (a) => urgency.get(a.address);
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
-    // Archived: by hand (until the state next changes), or idle 6 hours. Pinned never.
+    // Standby ("archived" inside): by hand (until the state next changes), or idle 6 hours. Pinned never.
     const marks = shared("agents.archived") ?? {};
     const isArchived = (a) => {
       if (a.pinned) return false;
@@ -1140,7 +1140,7 @@ export default class Agents extends View {
     const rows = groups.flatMap((g) => [...(g.members.length ? [this.moved(`agh-${g.id}`, foldAway(`agh-${g.id}`, 30, header(g)))] : []),
       ...(shownIn(g) ? g.all.map((a) => slot(`gs-${a.address}`, !a.pinned, a)) : [])]);
     const pinInk = settings().dark === false ? t.foreground : "#ffffff";
-    // The pinned area: at the top, a line under it. The + row ends the list (above Archived).
+    // The pinned area: at the top, a line under it. The + row ends the list (above Standby).
     const pinRows = [...live.map((a) => slot(`ps-${a.address}`, a.pinned, a)),
       // The line under it, with a small solid pin in its middle (white, see-through).
       this.moved("pin-line", div().id("pin-line")).flex_none().mx(-8).px(collapsed && mini() ? 9 : 20).overflow_hidden().h(pinned.length ? 14 : 0).transition("height", SLIDE)
@@ -1150,7 +1150,7 @@ export default class Agents extends View {
           .child(svg("mods/my-agents/pin-solid.svg").size(7).flex_none().text_color(pinInk))
           .child(div().flex_1().h(1).rounded_full().bg(pinInk)))];
 
-    const archive = { id: "archived", label: "Archived", status: null, members: old };
+    const archive = { id: "archived", label: "Standby", status: null, members: old };
     const byAge = [...old].sort((x, y) => this.since(x) - this.since(y));
     const older = byAge.slice(0, Math.max(0, byAge.length - ARCHIVE_SHOWN)), newest = byAge.slice(older.length);
     const more = this.archiveMore && older.length > 0;
@@ -1205,7 +1205,7 @@ export default class Agents extends View {
         el.child(div().px(12).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
       .child(v_flex().id("ag-list").flex_1().min_h(0).px(8).overflow_y_scrollbar().mode("always").children(pinRows).children(rows).child(this.newRow(t, collapsed))
-        // Archived sits at the bottom: a spacer takes what the list leaves.
+        // Standby sits at the bottom: a spacer takes what the list leaves.
         .when(archiveRows.length > 0, (el) => el.child(div().flex_1().min_h(8)).children(archiveRows).child(div().h(6).flex_none())))
       // Load every Clawd frame once, unseen, so the first time they're needed none is blank.
       .when(this.preloadFrames, (el) => el.child(div().absolute().top(0).left(0).size(1).opacity(0).overflow_hidden()

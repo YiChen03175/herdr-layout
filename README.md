@@ -29,12 +29,15 @@
 - Agents 列表：
   - 可以依 space 分組或依優先順序排。
   - 子 agent 會以樹狀顯示在 parent 底下，可以收合。
-  - 展開時狀態看圖示，列的最右邊只留時間：Claude Code 是 Clawd 的小動畫，其他 agent 卡住會跳、工作中慢慢閃。收合成只有圖示的窄欄時也是這樣，閒置的會再稍微變淡。
+  - 狀態只看圖示，列上沒有轉圈、驚嘆號或圓點：Claude Code 是 Clawd 的小動畫，其他 agent 卡住會跳、工作中慢慢閃。全寬時列的最右邊只留時間；半寬和只有圖示的窄欄也一樣，窄欄裡閒置的會再稍微變淡。子 agent 列也是這樣。群組收起來時，標題會變成裡面最急的那個狀態的顏色。Spaces 的列也不再有狀態圓點。
+  - 點進一個 session 時，它當下的狀態（done 或 blocked）會維持到你離開它為止，不會一點就變；agent 自己開始動（working，或又停下、又需要你）才會馬上改。
+  - 排序變動時（狀態改變、區段標題出現或消失、收合群組、換排序方式），每一列會從原本的位置滑到新位置（0.3 秒）。
+  - 沒有回報狀態的一般 terminal（shell、編輯器）也會列出來，預設放在 Standby；agent 用 `hc run` 開的仍掛在它底下。
   - 滑鼠停在某列上會顯示 Recap 小卡，最上面是 session 標題，下面是 Claude Code / Grok 的「while you were away」摘要。沒有 recap（或已經看過）時，改顯示最後一則回應的開頭，最多 5 行（Claude Code、Grok、opencode 都有）。收合成窄欄時，什麼都沒有也會顯示標題。
-  - 閒置超過 6 小時的 session 移到列表最底部的「Archived」區。右鍵一列可以手動 Archive / Unarchive、釘選，或 Close（關掉它的 pane，跟 tab 的 Close 一樣；只剩它一個時整個 tab 會關掉），Close 會先跳確認視窗。手動的選擇維持到那個 agent 狀態下次改變為止；釘選的不會被封存。Archived 只顯示最新的 3 個，上方的「N more」按鈕會把較舊的往上展開。
+  - 閒置超過 6 小時的 session 移到列表最底部的「Standby」區。右鍵一列可以手動 Move to Standby / Take out of Standby、釘選，或 Close（關掉它的 pane，跟 tab 的 Close 一樣；只剩它一個時整個 tab 會關掉），Close 會先跳確認視窗。手動的選擇維持到那個 agent 狀態下次改變為止；釘選的不會進 Standby。Standby 只顯示最新的 3 個，上方的「N more」按鈕會把較舊的往上展開。
   - Claude Code 的圖示會照狀態換成 Clawd 的小動畫：working 頭上冒思考泡泡、需要你時一臉困惑、done（做完還沒看）開心地跳；idle 維持原本的圖示。換狀態時舊的先淡出、新的再淡入（各約 0.14 秒）。Herdr 不在前景時不播 GIF，這時改用拆開的 PNG 格（`clawd-<狀態>/`）依時間換格，每 0.12 秒重畫一次，只在畫面上有 Clawd 時才跑。GIF 取自 [clawd-tank](https://github.com/marciogranzotto/clawd-tank)、[clawd-pet](https://github.com/abderrahimghazali/clawd-pet)、[clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk)（出處見 `mods/my-agents/clawd.LICENSE`），裁成 36px，每個不到 10 KB。動畫來源與授權見 `mods/my-agents/clawd.LICENSE`；`clawd-done.gif` 和 `clawd-done/` 改自 clawd-on-desk，依 AGPL-3.0 授權，不適用本 repo 的 LICENSE。
   - Claude Code 停下來但還有 shell 開著時，由 decision model 判斷：還在等 shell 就繼續顯示 working，在等你回答就等同 blocked，做完或判斷不出來就維持原本的狀態。側邊欄、上方 tab、space、pane header 和狀態列都看同一份結果。
-  - 釘選的 session 隔成最上面一塊（底下一條分隔線，中間有一個斜放的實心小圖釘，線和圖釘同色）；「+ New tab」在一般列表的最後、Archived 之上；釘選或取消時，它會從原本的位置收起、在上面那塊展開（約 0.2 秒）。
+  - 釘選的 session 隔成最上面一塊（底下一條分隔線，中間有一個斜放的實心小圖釘，線和圖釘同色）；「+ New tab」在一般列表的最後、Standby 之上；釘選或取消時，它會從原本的位置收起、在上面那塊展開（約 0.2 秒）。
 - **Agent 完成或需要你時改成 macOS 系統通知**，並收掉 Herdr 視窗內右下角的提示。通知三行依序是狀態（Ready／Needs you）、agent 所在的 repo（不在 repo 裡就是資料夾名稱）、session 名稱，旁邊附上 agent 的圖示（Claude Code、Grok…）。點通知會切回 Herdr 並跳到那個 agent（需要 `terminal-notifier`；沒裝的話改用 `osascript`，點了會打開「指令碼編寫程式」）。
 - 底部按鈕依序是 Commands（指令面板，展開時顯示快捷鍵）、Settings、Add machine。
 
