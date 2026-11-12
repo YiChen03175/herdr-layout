@@ -4,8 +4,8 @@
 //   Merged      MRs I opened that were merged in the last MERGED_DAYS days
 //   To review   open MRs where I'm a requested reviewer and haven't reviewed yet
 // Click a row to open it in the browser; right-click an Open one for a menu that
-// can close it (after a confirm dialog). The tab bar's button shows how many are
-// waiting on my review (shared "my-gitlab.review").
+// can close it (after a confirm dialog). The tab bar's button lights up with a count
+// of what's new (shared "my-gitlab.new", see publishNews).
 //
 // The menu and the dialog are this same mod as overlays, with props { menu: mr }
 // or { closeMr: mr }; a close bumps shared "my-gitlab.changed" so the panel reloads.
@@ -41,6 +41,21 @@ function setClosing(url, on) {
 // Opening the panel refreshes it when what it shows is older than this.
 const STALE_ON_OPEN = 30000;
 const VISIBLE_EVERY = 1000;
+
+// News: a review asked of me, or one of my open MRs approved, that I haven't seen in
+// this panel yet. shared "my-gitlab.seen" keeps the ones seen (only while they're
+// still listed: one that comes back is news again), "my-gitlab.new" how many aren't.
+// look: the panel is showing, so everything listed counts as seen.
+const approved = (mr) => (mr.approvalsLeft ?? 0) === 0 && (mr.approvedBy?.nodes?.length ?? 0) > 0;
+function publishNews(lists, look) {
+  const now = [...lists.review.map((mr) => `review ${mr.webUrl}`), ...lists.open.filter(approved).map((mr) => `approved ${mr.webUrl}`)];
+  const before = shared("my-gitlab.seen");
+  // The first time, what's already there isn't news.
+  const seen = look || !Array.isArray(before) ? now : before.filter((k) => now.includes(k));
+  if (JSON.stringify(seen) !== JSON.stringify(before)) setShared("my-gitlab.seen", seen);
+  const fresh = now.filter((k) => !seen.includes(k)).length;
+  if (shared("my-gitlab.new") !== fresh) setShared("my-gitlab.new", fresh);
+}
 
 const QUERY = `query($mergedAfter: Time) {
   currentUser {
@@ -173,6 +188,8 @@ export default class Gitlab extends View {
       const shown = visible(), opened = shown && !this.shown;
       this.shown = shown;
       if (!inCharge()) return;
+      // Opening the panel is looking at what's new (the reload below adds anything newer).
+      if (opened && this.lists) publishNews(this.lists, true);
       const now = Date.now();
       // A merge request was closed from the dialog: reload now.
       if (shared("my-gitlab.changed") !== this.changeSeen) {
@@ -206,7 +223,7 @@ export default class Gitlab extends View {
           if (org) orgs[org] = (orgs[org] ?? 0) + 1;
         }
         this.org = Object.entries(orgs).sort((a, b) => b[1] - a[1])[0]?.[0] ?? this.org;
-        if (shared("my-gitlab.review") !== this.lists.review.length) setShared("my-gitlab.review", this.lists.review.length);
+        publishNews(this.lists, visible());
         // Closed ones are gone from the list now: their marks go too (and any left too long).
         const marks = closingNowSafe(), listed = new Set(this.lists.open.map((mr) => mr.webUrl));
         const kept = Object.fromEntries(Object.entries(marks).filter(([url, at]) => listed.has(url) && Date.now() - at < CLOSING_MAX));
@@ -350,8 +367,7 @@ export default class Gitlab extends View {
     const ci = mr.headPipeline?.status;
     const ciOk = !ci || ci === "SUCCESS";
     if (ciOk && mr.approvalsLeft !== undefined) {
-      const approved = (mr.approvalsLeft ?? 0) === 0 && (mr.approvedBy?.nodes?.length ?? 0) > 0;
-      return approved ? this.dot(t, "ansi2", "✓") : icon("circle-check", "ansi3");
+      return approved(mr) ? this.dot(t, "ansi2", "✓") : icon("circle-check", "ansi3");
     }
     const [g, c] = pipeline(mr.headPipeline);
     return this.dot(t, c, g);

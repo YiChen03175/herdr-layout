@@ -20,7 +20,7 @@
 - 分頁列右上多一個 GitLab，排在 Files、Changes 左邊，打開依序是：To review（指定我 review 而且我還沒 review 的，有才出現、不能收合）、Open（我開的還沒 merge 的 MR，不含 closed）、Merged（最近 7 天 merge 的）。
 - 每一列有標題、專案、`!編號`，點一下用瀏覽器打開。前面一個圖示代表狀態：紅色警告是 conflict；✗ / ● 是 pipeline 失敗 / 執行中；黃色圈圈勾是 CI 過了但還沒 approve；綠色 ✓ 是 CI 過了也 approve 了。時間在右邊，Merged 預設收起來。標題是 MR 所在的組織名稱（例如 maxnion），右上角的「↻ 3m」點了會重新整理。
 - 在 Open 的 MR 上按右鍵：用瀏覽器打開，或關閉這個 MR（會先跳確認視窗，Enter 確認、Esc 取消；關掉的 MR 之後還能在 GitLab 上重新打開）。
-- 有 MR 等我 review 時，GitLab 按鈕右上角會有紅色數字。區塊是空的時只顯示標題和 0。
+- 有新的東西（新指派給我 review 的 MR，或我開的 MR 被 approve）時，GitLab 按鈕的字變亮，前面的 icon 換成新的數量（跟 icon 一樣高），切換時淡入淡出、寬度平滑變化。打開 GitLab 面板就算看過，按鈕恢復原樣；同一個 MR 之後再被指派或再被 approve 會再亮。區塊是空的時只顯示標題和 0。
 - 面板開著時每 2 分鐘更新，打開時如果資料超過 30 秒會馬上更新；收起來時每 5 分鐘更新一次，Herdr 一開就會先更新一次，讓按鈕上的數字保持正確（layout 裡一個 0 px 的 `gitlab-poll` 區塊負責）。
 
 **左側欄（`my-chrome`、`my-spaces`、`my-agents`）**

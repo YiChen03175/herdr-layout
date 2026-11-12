@@ -97,6 +97,9 @@ function liveTitle(own) {
 // Working tabs: the icon fades in and out slowly, like a working agent's
 // icon in the sidebar (my-agents' PULSE).
 const PULSE = { from: 0.35, to: 1, period: 2000, easing: "ease-in-out" };
+// GitLab's news (a review asked of me, one of my MRs approved, not yet seen): its
+// button lights up and its icon turns into the count, easing over this long.
+const NEWS = { duration: 280, easing: "ease-out" };
 // Below this tab bar width (layout px), GitLab, Files and Changes show only their icons.
 const PANEL_LABELS_MIN = 760;
 // The longest a tab's title gets (layout px), on a wide bar and below PANEL_LABELS_MIN.
@@ -486,19 +489,31 @@ export default class Tabs extends View {
     this.syncPanel(space, panel, body, enabled, cx);
     // Narrower than PANEL_LABELS_MIN, the GitLab, Files and Changes buttons are just their icons.
     const iconOnly = (this.barW ?? Infinity) < PANEL_LABELS_MIN;
-    const panelButton = (id, label, icon, count = 0) => {
+    // news: how many new things wait behind the button (GitLab). Lit, a brighter
+    // label fades in (no fill), and the icon fades up and out while the count rises
+    // into its place, its slot widening to fit; unlit, the same backwards (the count
+    // fading out is the last one shown).
+    const panelButton = (id, label, icon, news = 0) => {
       const on = panel && !panel.hidden && body?.active === id;
+      const lit = news > 0 && !on;
+      if (news > 0) (this.newsShown ??= {})[id] = news;
+      const n = this.newsShown?.[id] ?? 0;
+      const count = n > 99 ? "99+" : String(n);
+      // The count is the icon's height (14): a circle for one digit, wider for more.
+      const slotW = lit ? 14 + 5 * (count.length - 1) : 14;
+      const fade = (key, shown) => div().id(`panel-${id}-${key}`).opacity(shown ? 1 : 0).transition("opacity", NEWS);
       return h_flex().id(`panel-${id}`).cursor_pointer().h(26).px(iconOnly ? 6 : 8).gap(5).flex_none().items_center().rounded(6)
         .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click((_e, cx) => slidePanel(this, on ? null : id, cx)).child(svg(icon).size(14))
-        .when(!iconOnly, el => el.child(label))
-        // What waits on you (GitLab: MRs to review): a red count on the button's top right
-        // corner, like an app badge; the icon-only button too.
-        .when(count > 0, el => el.relative().child(div().absolute().top(-5).right(-6).min_w(15).h(15).px(4).rounded_full()
-          .flex().items_center().justify_center().bg(t.blocked).border(1.5).border_color(t.chrome)
-          .text_color("#ffffff").text_size(9.5).font_bold().child(count > 99 ? "99+" : String(count))))
-        .when(iconOnly, el => el.tooltip(label));
+        .on_click((_e, cx) => slidePanel(this, on ? null : id, cx))
+        .child(div().id(`panel-${id}-slot`).relative().h(14).flex_none().w(slotW).transition("width", NEWS)
+          .child(fade("icon", !lit).absolute().left(0).top(lit ? -5 : 0).transition("top", NEWS).child(svg(icon).size(14)))
+          .when(n > 0, el => el.child(fade("count", lit).absolute().left(0).w_full().h(14).top(lit ? 0 : 5).transition("top", NEWS)
+            .flex().items_center().justify_center().rounded_full().bg(t.accent)
+            .text_color(t.background).text_size(9.5).font_bold().child(count))))
+        .when(!iconOnly, el => el.child(div().relative().child(label)
+          .child(fade("label", lit).absolute().top(0).left(0).text_color(t.foreground).child(label))))
+        .when(iconOnly, el => el.tooltip(lit ? `${label} · ${n} new` : label));
     };
     return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .id("tabs-root")
@@ -519,7 +534,7 @@ export default class Tabs extends View {
         )
       // New tabs start from the + at the top of the agents list (my-agents).
       // GitLab first, then Herdr's own panels.
-      .child(panelButton("gitlab", "GitLab", "mods/my-gitlab/gitlab.svg", shared("my-gitlab.review") ?? 0))
+      .child(panelButton("gitlab", "GitLab", "mods/my-gitlab/gitlab.svg", shared("my-gitlab.new") ?? 0))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
       .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
