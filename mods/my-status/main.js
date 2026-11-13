@@ -24,6 +24,7 @@ const USAGE_CHECK = 30000;
 const METERS = [["fable", "Fable", "Fable 本週用量"], ["week", "週", "本週用量（全部模型）"], ["five_hour", "5h", "5 小時用量"]];
 const BAR_W = 64;
 const BAR_H = 14;
+const DIGIT_W = 5.6; // about how wide one digit of the percent is
 const TRACK = 0.5;   // the empty part
 const SOFT = 0.6;    // the week's fill
 const BRIGHT = 1;    // Fable, alone and as its part of the week
@@ -117,20 +118,21 @@ export default class WorkspaceStatus extends View {
       + (w.cap != null ? `，最多可用每週上限的 ${w.cap}%` : "")
       + (w.resets ? `，${when(w.resets)} 重置` : "");
     const fill = (p, color, alpha) => div().absolute().top(0).left(0).h_full().w(width(p)).rounded_full().bg(color).opacity(alpha);
-    // The percent, right-aligned across the whole bar.
-    const number = (color) => h_flex().absolute().top(0).left(0).w(BAR_W).h_full().items_center().justify_end().pr(6)
-      .text_size(9.5).font_weight(600).text_color(color).child(`${Math.round(w.pct)}`);
+    // The percent sits at the end of the fill: inside it (in the background colour)
+    // when the fill is wide enough, else just past it.
+    const text = `${Math.round(w.pct)}`;
+    const end = w.pct > 0 ? width(w.pct) : 0;
+    const inside = end >= text.length * DIGIT_W + 8;
+    const number = inside
+      ? h_flex().absolute().top(0).left(0).w(end).h_full().items_center().justify_end().pr(4).text_color(t.background)
+      : h_flex().absolute().top(0).left(end + 3).h_full().items_center().text_color(t.foreground);
     return h_flex().gap(6).items_center().flex_none().tooltip(tip)
       .child(div().child(label))
       .child(div().relative().w(BAR_W).h(BAR_H).rounded_full().overflow_hidden()
         .child(div().absolute().inset_0().rounded_full().bg(t.dim).opacity(TRACK))
         .when(w.pct > 0, el => el.child(fill(w.pct, hot ? t.blocked : t.accent, key === "fable" ? BRIGHT : SOFT)))
         .when(part != null, el => el.child(fill(part, t.accent, BRIGHT)))
-        .child(number(t.foreground))
-        // Where the fill reaches under the number, that part of it is drawn again
-        // in the background colour, clipped to the fill, so it stays readable.
-        .when(w.pct > 0, el => el.child(div().absolute().top(0).left(0).h_full().w(width(w.pct)).overflow_hidden()
-          .child(number(t.background)))));
+        .child(number.text_size(9.5).font_weight(600).child(text)));
   }
 
   render() {

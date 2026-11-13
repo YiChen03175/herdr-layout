@@ -34,7 +34,7 @@
   - 排序變動時（狀態改變、區段標題出現或消失、收合群組、換排序方式），每一列會從原本的位置滑到新位置（0.3 秒）。
   - 沒有回報狀態的一般 terminal（shell、編輯器）也會列出來，預設放在 Standby；agent 用 `hc run` 開的仍掛在它底下。
   - 滑鼠停在某列上會顯示 Recap 小卡，最上面是 session 標題，下面是 Claude Code / Grok 的「while you were away」摘要。沒有 recap（或已經看過）時，改顯示最後一則回應的開頭，最多 5 行（Claude Code、Grok、opencode 都有）。收合成窄欄時，什麼都沒有也會顯示標題。
-  - 閒置超過 6 小時的 session 移到列表最底部的「Standby」區。右鍵一列可以手動 Move to Standby / Take out of Standby、釘選，或 Close（關掉它的 pane，跟 tab 的 Close 一樣；只剩它一個時整個 tab 會關掉），Close 會先跳確認視窗。手動的選擇維持到那個 agent 狀態下次改變為止；釘選的不會進 Standby。Standby 只顯示最新的 3 個，上方的「N more」按鈕會把較舊的往上展開。
+  - 閒置超過 6 小時的 session 移到列表最底部的「Standby」區。右鍵一列可以手動 Move to Standby / Take out of Standby、釘選，或 Close（關掉它的 pane，跟 tab 的 Close 一樣；只剩它一個時整個 tab 會關掉），Close 會先跳確認視窗。手動的選擇維持到那個 agent 狀態下次改變為止；釘選的不會進 Standby。Standby 只顯示最新的 3 個，上方的按鈕（上箭頭，下面是還有幾個）會把較舊的展開在它下面，按鈕留在最上面，展開後換成收合圖示、不顯示數字。
   - Claude Code 的圖示會照狀態換成 Clawd 的小動畫：working 頭上冒思考泡泡、需要你時一臉困惑、done（做完還沒看）開心地跳；idle 維持原本的圖示。換狀態時舊的先淡出、新的再淡入（各約 0.14 秒）。Herdr 不在前景時不播 GIF，這時改用拆開的 PNG 格（`clawd-<狀態>/`）依時間換格，每 0.12 秒重畫一次，只在畫面上有 Clawd 時才跑。GIF 取自 [clawd-tank](https://github.com/marciogranzotto/clawd-tank)、[clawd-pet](https://github.com/abderrahimghazali/clawd-pet)、[clawd-on-desk](https://github.com/rullerzhou-afk/clawd-on-desk)（出處見 `mods/my-agents/clawd.LICENSE`），裁成 36px，每個不到 10 KB。動畫來源與授權見 `mods/my-agents/clawd.LICENSE`；`clawd-done.gif` 和 `clawd-done/` 改自 clawd-on-desk，依 AGPL-3.0 授權，不適用本 repo 的 LICENSE。
   - Claude Code 停下來但還有 shell 開著時，由 decision model 判斷：還在等 shell 就繼續顯示 working，在等你回答就等同 blocked，做完或判斷不出來就維持原本的狀態。側邊欄、上方 tab、space、pane header 和狀態列都看同一份結果。
   - 釘選的 session 隔成最上面一塊（底下一條分隔線，中間有一個斜放的實心小圖釘，線和圖釘同色）；「+ New tab」在一般列表的最後、Standby 之上；釘選或取消時，它會從原本的位置收起、在上面那塊展開（約 0.2 秒）。
@@ -67,7 +67,7 @@
 ## 安裝
 
 ```sh
-git clone https://github.com/YiChen03175/herdr-layout.git
+git clone git@gitlab.com:yi.chen4/herdr-layout.git
 cd herdr-layout
 ./install.sh               # 全部
 ./install.sh --no-claude   # 不改 Claude Code 的設定

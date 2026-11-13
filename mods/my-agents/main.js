@@ -45,12 +45,29 @@ const MOVE = { duration: 300, easing: "ease-in-out" };
 const ROW_GAP = 2;
 // Mini rail: icon squares sit this far from the sidebar's sides and section edges.
 const RAIL_EDGE = 5;
+// The selected row's color: the theme's, made stronger. A see-through color
+// (#rrggbbaa, as the dark themes use) gets SELECTED_BOOST times its opacity; an
+// opaque one moves SELECTED_LIFT of the way toward the text color.
+const SELECTED_BOOST = 1.35;
+const SELECTED_LIFT = 0.05;
+const selectedBg = (t) => {
+  const c = t.selected ?? "";
+  if (/^#[0-9a-f]{8}$/i.test(c)) {
+    const alpha = Math.min(255, Math.round(parseInt(c.slice(7), 16) * SELECTED_BOOST));
+    return c.slice(0, 7) + alpha.toString(16).padStart(2, "0");
+  }
+  const rgb = (x) => (/^#[0-9a-f]{6}$/i.test(x ?? "") ? [1, 3, 5].map((i) => parseInt(x.slice(i, i + 2), 16)) : null);
+  const a = rgb(c), b = rgb(t.foreground);
+  if (!a || !b) return c;
+  return "#" + a.map((x, i) => Math.round(x + (b[i] - x) * SELECTED_LIFT).toString(16).padStart(2, "0")).join("");
+};
+
 // On the mini rail: a square as tall as the row, centered on its 18 px icon,
 // in the row's selected or hover color (nothing otherwise).
 const railSquare = (t, rowH, selected, hovered) => {
   const inset = (rowH - 18) / 2;
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
-    .when(selected || hovered, (el) => el.bg(selected ? t.selected : t.hover));
+    .when(selected || hovered, (el) => el.bg(selected ? selectedBg(t) : t.hover));
 };
 // Recaps (Claude Code's and Grok's "while you were away" line): recap.py finds
 // each agent's latest one, until the person writes again. Checked every few
@@ -80,7 +97,7 @@ const RECAP_W = 300;
 const CARD_LINE_H = 12.5 * 1.5; // one line of a card's text
 // Idle this long, an agent moves to Standby at the list's bottom (right-click: by hand).
 const ARCHIVE_AFTER = 6 * 3600000;
-// Standby shows its newest few; a button above them unfolds the rest upward.
+// Standby shows its newest few; a button above them unfolds the rest, under the button.
 const ARCHIVE_SHOWN = 3;
 const ROW_H = 30 + 2, SUB_H = 26; // a row with its half gaps; a sub-agent row
 // Popups from the sidebar (the + menu, a recap) open just clear of its edge, their
@@ -534,7 +551,7 @@ export default class Agents extends View {
   // A small white dot on the icon's top right: this agent has a recap. A ring
   // in the row's own color around it cuts it out of the icon.
   recapDot(t, a) {
-    const ring = this.hovered === a.address ? t.hover : a.focused ? t.selected : t.chrome;
+    const ring = this.hovered === a.address ? t.hover : a.focused ? selectedBg(t) : t.chrome;
     return div().absolute().top(-2.5).right(-3.5).p(1.5).rounded_full().bg(ring)
       .when(!this.recapOf(a.address), (el) => el.opacity(0))
       .child(div().size(4.5).rounded_full().bg(t.foreground));
@@ -998,7 +1015,7 @@ export default class Agents extends View {
           .gap(6)
           // On the mini rail the row is wider than tall: its look goes on a square
           // around the icon instead, which glides with it.
-          .when(!small, (el) => el.overflow_hidden().when(a.focused, (el) => el.bg(t.selected)).hover((s) => s.bg(t.hover))
+          .when(!small, (el) => el.overflow_hidden().when(a.focused, (el) => el.bg(selectedBg(t))).hover((s) => s.bg(t.hover))
             .on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx)))
           .on_click((_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); })
           .child(div().id(`ag-icon-${a.address}`).flex_none().relative().left(dx).transition("left", SLIDE)
@@ -1048,7 +1065,7 @@ export default class Agents extends View {
         .rounded(8)
         .items_center()
         .gap(9)
-        .when(a.focused, (el) => el.bg(t.selected))
+        .when(a.focused, (el) => el.bg(selectedBg(t)))
         .hover((s) => s.bg(t.hover))
         .on_hover((on, cx) => this.hoverRecap(a, on, cx))
         .on_mouse_move((e, cx) => this.trackHover(a, e, cx))
@@ -1159,17 +1176,22 @@ export default class Agents extends View {
     const shutting = Date.now() - (this.archiveAt ?? 0) < SLIDE.duration + 50;
     const slide = (a) => slot(`arc-${a.address}`, more, a, shutting);
     const small = collapsed && mini();
-    const moreButton = h_flex().id("arc-more").h(26).mb(2).px(8).flex_none().gap(6).items_center().rounded(7)
-      .when(small, (el) => el.justify_center().px(0))
+    // Folded: ⌃ with how many more under it; open: the fold-in icon, no number.
+    // On the rail it's a square, like the rows.
+    const unfold = v_flex().w(16).h(24).flex_none().items_center().justify_center()
+      .child(svg("mods/my-agents/chevron-up.svg").size(10).flex_none())
+      .child(h_flex().h(12).flex_none().items_center().text_size(10.5).font_bold().child(String(older.length)));
+    const moreButton = h_flex().id("arc-more").h(30).mb(2).px(8).flex_none().gap(6).items_center().rounded(7)
+      .when(small, (el) => el.w(30).self_center().justify_center().px(0))
       .text_size(11).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => { this.archiveMore = !this.archiveMore; this.archiveAt = Date.now(); cx.notify(); })
-      .child(svg(more ? "mods/workspace-chrome/chevron-down.svg" : "mods/my-agents/chevron-up.svg").size(11).flex_none())
-      .when(!small, (el) => el.child(more ? "Show less" : `${older.length} more`))
-      .when(small && !more, (el) => el.child(String(older.length)));
+      .child(more ? svg("mods/my-agents/chevrons-down-up.svg").size(12).flex_none() : unfold)
+      .when(!small, (el) => el.child(more ? "Show less" : "more"));
     const archiveRows = old.length ? [foldAway("agh-archived", 30, header(archive)),
       ...(this.folded.has("archived") && !small ? [] : [
-        ...older.map(slide),
+        // The button stays on top: the older ones open under it (the section grows upward).
         ...(older.length ? [moreButton] : []),
+        ...older.map(slide),
         ...newest.flatMap(withKids)])] : [];
 
     return track(v_flex().id("agents-root"))
