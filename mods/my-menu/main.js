@@ -2,7 +2,8 @@
 // props { tab: "pane" | "tab" | "space" | "global", target }.
 // ↑/↓ move, Enter runs, Esc closes. An item is [label, command, args];
 // a command "worktree" opens the worktree dialog instead.
-// my-menu (a clone of Herdr's menu): Close tab and Close pane ask first (my-confirm),
+// my-menu (a clone of Herdr's menu, used for tab, space and terminal right-clicks):
+// Close tab and Close pane ask first (my-confirm),
 // Rename tab suggests a name (my-rename); my-tabs opens this one.
 
 import { View, div, svg } from "gpui-kit";

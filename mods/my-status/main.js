@@ -40,7 +40,8 @@ export default class WorkspaceStatus extends View {
   init(_props, cx) {
     this.git = null;   // { cwd, worktree: name | null, dirty } for the focused local folder
     this.asking = null;
-    cx.timer.every(500, (cx) => { if (this.cwd() !== this.git?.cwd) this.look(cx); });
+    // (?? null: a remote space's cwd is null, and an unset this.git mustn't count as a change.)
+    cx.timer.every(500, (cx) => { if (this.cwd() !== (this.git?.cwd ?? null)) this.look(cx); });
     cx.timer.every(DIRTY_EVERY, (cx) => { if (window()?.active) this.look(cx); });
 
     this.usage = null; // {five_hour, week, fable, at}; each window {pct, resets} or null
@@ -122,7 +123,8 @@ export default class WorkspaceStatus extends View {
     // when the fill is wide enough, else just past it.
     const text = `${Math.round(w.pct)}`;
     const end = w.pct > 0 ? width(w.pct) : 0;
-    const inside = end >= text.length * DIGIT_W + 8;
+    // A fill at its smallest is a circle: the number goes past it.
+    const inside = end > BAR_H && end >= text.length * DIGIT_W + 8;
     const number = inside
       ? h_flex().absolute().top(0).left(0).w(end).h_full().items_center().justify_end().pr(4).text_color(t.background)
       : h_flex().absolute().top(0).left(end + 3).h_full().items_center().text_color(t.foreground);

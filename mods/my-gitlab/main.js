@@ -20,7 +20,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { exec, theme, layout, shared, setShared, props, openOverlay, closeOverlay, appHome } from "herdr";
+import { exec, run, theme, layout, shared, setShared, props, openOverlay, closeOverlay, appHome } from "herdr";
 
 const ICON = (name) => `mods/my-gitlab/${name}.svg`;
 const MERGED_DAYS = 7;
@@ -92,6 +92,12 @@ const CLOSE_MR = `mutation($projectPath: ID!, $iid: String!) {
 }`;
 
 const NO_GLAB = "找不到 glab：brew install glab，然後 glab auth login。";
+// What an error means the person has to do first: install glab, or log in.
+const needOf = (error) => !error ? null : error === NO_GLAB ? "glab"
+  : /401|unauthori[sz]ed|unauthenticated|no token|not logged in|auth login/i.test(error) ? "login" : null;
+// A login or an install runs in a new tab; the panel retries meanwhile (LOGIN_WAIT at most).
+const LOGIN_WAIT = 5 * 60 * 1000;
+const inTab = (name, command) => run("tab.new", { name, argv: ["sh", "-c", `${command}; echo; echo "完成後可以關掉這個分頁。"; exec "\${SHELL:-/bin/zsh}" -l`] });
 
 // Runs a GitLab GraphQL request through glab; resolves with its data, or throws
 // GitLab's or glab's message (NO_GLAB when glab can't be started at all).
@@ -446,6 +452,38 @@ export default class Gitlab extends View {
       .when(open, (el) => el.children(items.map((mr) => row(t, mr))));
   }
 
+  // Instead of glab's error: one button that does what's missing (in a new tab),
+  // then retries until it works.
+  signIn(t, need) {
+    // Logging in: Accounts & keys opens on GitLab and starts glab's web login
+    // (the browser opens GitLab's Authorize page).
+    const start = (cx) => {
+      if (need === "glab") inTab("Install glab", "brew install glab");
+      else openOverlay({ mod: "my-setup", kind: "dialog", width: 560, height: 600, props: { focus: "gitlab", login: true } });
+      this.waitingSince = Date.now();
+      const retry = (cx) => {
+        if (!needOf(this.error) || Date.now() - this.waitingSince > LOGIN_WAIT) return;
+        this.refresh(cx);
+        cx.timer.after(5000, retry);
+      };
+      cx.timer.after(5000, retry);
+    };
+    const waiting = this.waitingSince && Date.now() - this.waitingSince < LOGIN_WAIT;
+    return v_flex().m(6).p(14).gap(10).rounded(10).border(1).border_color(t.border).bg(t.raised)
+      .child(div().font_semibold().child(need === "glab" ? "還沒安裝 glab" : "登入 GitLab"))
+      .child(div().text_size(12).text_color(t.dim).whitespace_normal().child(need === "glab"
+        ? "這個面板透過 glab（GitLab 官方 CLI）讀你的 MR。按下面的按鈕會開一個分頁安裝它，裝好再回來登入。"
+        : "按下面的按鈕，瀏覽器會打開 GitLab 的授權頁，按 Authorize 就登入了。"))
+      .child(h_flex().gap(10).items_center()
+        .child(h_flex().id("gl-login").h(30).px(14).items_center().rounded(8).bg(t.solid).text_color(t.solid_foreground)
+          .text_size(12.5).font_medium().cursor_pointer().hover((s) => s.opacity(0.88))
+          .on_click((_e, cx) => start(cx)).child(need === "glab" ? "安裝 glab" : "用瀏覽器登入"))
+        .when(Boolean(waiting), (el) => el.child(div().text_size(11.5).text_color(t.dim).child("登入完成後這裡會自動更新…"))))
+      .child(div().id("gl-setup").text_size(11.5).text_color(t.accent).cursor_pointer().hover((s) => s.opacity(0.8))
+        .on_click(() => openOverlay({ mod: "my-setup", kind: "dialog", width: 560, height: 600, props: { focus: "gitlab" } }))
+        .child("所有帳號與 key"));
+  }
+
   render() {
     const t = theme();
     if (props()?.menu) return this.menu(t, props().menu);
@@ -464,8 +502,10 @@ export default class Gitlab extends View {
       .child(div().flex_1().min_w(0).truncate().font_semibold().child(this.org ?? "GitLab"))
       .child(refresh);
 
+    const need = needOf(this.error);
     const body = v_flex().id("gl-list").flex_1().min_h(0).overflow_y_scrollbar().px(6).pb(10)
-      .when(Boolean(this.error), (el) => el.child(div().m(6).p(10).rounded(8).border(1).border_color(t.ansi1)
+      .when(Boolean(need), (el) => el.child(this.signIn(t, need)))
+      .when(Boolean(this.error) && !need, (el) => el.child(div().m(6).p(10).rounded(8).border(1).border_color(t.ansi1)
         .text_size(12).text_color(t.ansi1).whitespace_normal().child(this.error)))
       .when(!L && !this.error, (el) => el.child(div().p(10).text_size(12).text_color(t.dim).child("Loading…")))
       .when(Boolean(L), (el) => el

@@ -78,7 +78,7 @@
                 }
               },
               "size": {
-                "px": 105
+                "px": 137
               }
             }
           ],
@@ -212,5 +212,6 @@
   "traffic_lights": [
     12,
     28
-  ]
+  ],
+  "terminal_menu": "my-menu"
 }

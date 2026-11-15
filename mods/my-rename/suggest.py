@@ -6,7 +6,7 @@
 For Claude Code: the session's title, how it started (the person's first
 messages), its latest compact summary, and its latest messages both ways; for anything else, the end of the terminal's screen. They go
 to Claude Haiku 5.5 (reasoning effort medium) on OpenRouter, with common secret
-shapes masked first. The key is in <app home>/secrets/openrouter-rename.key,
+shapes masked first. The key is in <app home>/secrets/ (openrouter.key from my-setup, or openrouter-rename.key),
 outside anything that gets exported. Every request is a line in
 <app home>/data/my-rename/suggest.log: the terminal, the answer, time, provider,
 whether it went on the account's own Anthropic key (BYOK) and the cost.
@@ -22,9 +22,15 @@ import time
 import urllib.error
 import urllib.request
 
+# Shared with my-agents (installed alongside): secret masking, the log, the key.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "my-agents"))
+from common import log as common_log, openrouter_key, redact  # noqa: E402
+from recap import claude_sessions  # noqa: E402
+
 HOME = os.path.expanduser("~")
 APP = os.environ.get("HERDR_APP_HOME") or os.path.join(HOME, ".config/herdr-app")
-KEY_FILE = os.path.join(APP, "secrets/openrouter-rename.key")
+NO_KEY = 3            # exit code without an OpenRouter key: the dialog offers to set one
 LOG_FILE = os.path.join(APP, "data/my-rename/suggest.log")
 URL = "https://openrouter.ai/api/v1/chat/completions"
 MODEL = "anthropic/claude-haiku-5.5"
@@ -35,16 +41,6 @@ MESSAGE_MAX = 700     # characters kept of each (its end)
 SUMMARY_MAX = 3500    # characters of the latest compact summary (its start and end)
 SCREEN_MAX = 3000     # characters kept of a screen
 NAME_MAX = 40
-SECRETS = [
-    (re.compile(r"\b(sk|pk|rk)-[A-Za-z0-9_-]{12,}"), "***"),
-    (re.compile(r"\b(ghp|gho|ghs|ghu|github_pat|xox[abprs]|AKIA|AIza|glpat)[A-Za-z0-9_-]{10,}"), "***"),
-    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*"), "***"),
-    (re.compile(r"(?i)\b(authorization|x-api-key|cookie)\s*:\s*[^'\"\n]+"), r"\1: ***"),
-    (re.compile(r"(?i)\bbearer\s+\S+"), "Bearer ***"),
-    (re.compile(r"(?i)([A-Z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key)[A-Z0-9_.-]*)(\s*[=:]\s*)(['\"]?)[^\s'\"]+\3"), r"\1\2***"),
-    (re.compile(r"(?i)(--?[a-z0-9-]*(?:token|secret|passw(?:or)?d|api-?key)[a-z0-9-]*)\s+\S+"), r"\1 ***"),
-    (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://***@"),
-]
 INSTRUCTIONS = (
     "You name terminal tabs. The session below gives how it started, a summary of the earlier work (if it was long) "
     "and its latest messages. Name what the session as a whole is about: its main project or goal, "
@@ -54,26 +50,9 @@ INSTRUCTIONS = (
 )
 
 
-def redact(text):
-    for pattern, mask in SECRETS:
-        text = pattern.sub(mask, text)
-    return text
-
-
 def hc(*args):
     exe = shutil.which("hc") or os.path.join(HOME, ".local/bin/hc")
     return subprocess.run([exe, *args], capture_output=True, text=True, timeout=10).stdout
-
-
-def claude_session(pid):
-    for p in glob.glob(os.path.join(HOME, ".claude/sessions/*.json")):
-        try:
-            d = json.load(open(p))
-            if int(d["pid"]) == pid:
-                return d["sessionId"]
-        except Exception:
-            pass
-    return None
 
 
 TAG = re.compile(r"<(system-reminder|local-command-[a-z]+|command-[a-z]+|bash-[a-z]+|task-notification)>.*?</\1>", re.S)
@@ -109,7 +88,7 @@ def entries(lines):
             continue
 
 
-def lines_backward(path, limit=60_000_000):
+def lines_backward(path, limit=8_000_000):
     """Complete lines from the end of a file, last first (at most `limit` bytes back)."""
     with open(path, "rb") as f:
         f.seek(0, os.SEEK_END)
@@ -176,7 +155,7 @@ def context(terminal):
     info = json.loads(hc("get", terminal, "--json") or "{}")
     app = (info.get("status") or {}).get("app")
     if app == "claude-code":
-        session = claude_session((info.get("foreground") or {}).get("pid"))
+        session = claude_sessions().get((info.get("foreground") or {}).get("pid"))
         text = session and claude_messages(session)
         if text:
             return "claude-code", text
@@ -186,22 +165,19 @@ def context(terminal):
 
 
 def log(entry):
-    try:
-        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-        with os.fdopen(os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a") as f:
-            f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), **entry}, ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    common_log(LOG_FILE, entry)
 
 
 def main():
     terminal = sys.argv[1]
     current = sys.argv[2] if len(sys.argv) > 2 else ""
+    key = openrouter_key("openrouter-rename.key")
+    if not key:
+        print("suggest.py: no OpenRouter key (set one in my-setup)", file=sys.stderr)
+        sys.exit(NO_KEY)
     kind, text = context(terminal)
     if not text:
         sys.exit("suggest.py: nothing to go on")
-    with open(KEY_FILE) as f:
-        key = f.read().strip()
     prompt = f"{INSTRUCTIONS}\n\nCurrent tab name: {current or '(none)'}\nProgram: {kind}\n\n<session>\n{redact(text)}\n</session>"
     body = json.dumps({"model": MODEL, "reasoning": {"effort": "medium"}, "max_tokens": 4000, "usage": {"include": True},
                        "messages": [{"role": "user", "content": prompt}]}).encode()

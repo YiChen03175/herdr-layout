@@ -477,8 +477,7 @@ export default class Tabs extends View {
           .when(c.status === "blocked" || c.status === "done", el => el.relative().loop("top", BOUNCE))))
         .child(this.title(c, c.zoomed ? `${name} Z` : name, read, t));
     };
-    const root = layout(), sidebar = find(root, "sidebar"), w = window();
-    // Old saved rails and a dragged-narrow sidebar can be smaller than the window buttons.
+    const root = layout(), w = window();
     // The bar spans the window's top, window buttons and all: start past them.
     const lightsPadding = w?.platform === "macos" && w.titlebar === "none" && !w.fullscreen && root?.traffic_lights
       ? (root.traffic_lights[0] + 64) / settings().zoom + 12

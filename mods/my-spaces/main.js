@@ -162,8 +162,15 @@ export default class Spaces extends View {
 
   refreshMachines(cx) {
     cx.spawn(async cx => {
-      try { const r = await hc(["machine", "ls", "--json"]); if (r.code === 0) this.machines = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary); } catch {}
-      cx.notify();
+      // Re-render only when the list changed (this runs every 15 s).
+      try {
+        const r = await hc(["machine", "ls", "--json"]);
+        if (r.code !== 0) return;
+        const machines = (JSON.parse(r.stdout).machines ?? []).filter((m) => !m.temporary);
+        if (JSON.stringify(machines) === JSON.stringify(this.machines)) return;
+        this.machines = machines;
+        cx.notify();
+      } catch {}
     });
   }
 
@@ -292,7 +299,7 @@ export default class Spaces extends View {
 
   menu(w) {
     // A popup is as tall as its items; height is only the most.
-    openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: w.id } } });
+    openOverlay({ mod: "my-menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: w.id } } });
   }
 
   orderingDue(now) {
@@ -483,6 +490,12 @@ export default class Spaces extends View {
     const avatar = h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(letter(w));
     // On the mini rail the avatar glides to the middle and the rest fades out.
     const dx = small ? (sidebarW() - 16 - 18) / 2 - 8 : 0;
+    const hover = (on, cx) => {
+      if (on) this.hoverSpace = w.id;
+      else if (this.hoverSpace === w.id) this.hoverSpace = null;
+      cx.notify();
+    };
+    const select = () => run("space.select", { id: w.id });
     // Half the gap above and below each row: the same space between rows and above the first.
     return div().py(ROW_GAP / 2).child(h_flex()
       .id(`space-${w.id}`)
@@ -495,15 +508,12 @@ export default class Spaces extends View {
       // On the mini rail the row is wider than tall: its look goes on a square
       // around the avatar instead (below), which glides with it.
       .when(!small, (el) => el.overflow_hidden().when(w.active, (el) => el.bg(t.selected)).when(!w.active, (el) => el.hover((s) => s.bg(t.hover))))
-      .on_hover((on, cx) => {
-        if (on) this.hoverSpace = w.id;
-        else if (this.hoverSpace === w.id) this.hoverSpace = null;
-        cx.notify();
-      })
-      .on_click(() => run("space.select", { id: w.id }))
+      // On the mini rail only the square you can see is clickable, not the row around it.
+      .when(!small, (el) => el.on_hover(hover).on_click(select))
       .on_mouse_down("right", () => this.menu(w))
       .child(div().id(`space-av-${w.id}`).flex_none().relative().left(dx).transition("left", SLIDE)
-        .when(small, (el) => el.child(railSquare(t, rowHeight({ tree }), w.active, this.hoverSpace === w.id)))
+        .when(small, (el) => el.child(railSquare(t, rowHeight({ tree }), w.active, this.hoverSpace === w.id)
+          .id(`space-sq-${w.id}`).on_hover(hover).on_click(select)))
         .child(avatar))
       .child(div().id(`space-name-${w.id}`).flex_1().min_w(0).truncate().text_color(w.active ? t.foreground : t.muted)
         .opacity(small ? 0 : 1).transition("opacity", FADE)

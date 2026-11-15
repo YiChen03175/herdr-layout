@@ -1,6 +1,6 @@
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { theme, run, props, window, shared, setShared, updates, layout, settings, keys } from "herdr";
+import { theme, run, props, window, shared, setShared, updates, layout, settings, keys, exec, appHome } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -37,11 +37,10 @@ const RAIL_ICON = 16;
 // Smoothly to the rail, or back to the width it had: the width eases over a
 // quarter second (a short burst of resizes on a click, nothing while idle).
 const SLIDE_MS = 240;
+const SETUP_EVERY = 10 * 60 * 1000; // how often the footer re-checks Accounts & keys
 function toggleSidebar(view, cx) {
   const from = sidebarPx();
   if (!narrow()) setShared("sidebar.width", from);
-  // Mods edited before the rail went by width still read the flag.
-  setShared("sidebar.collapsed", !narrow());
   const to = narrow() ? (shared("sidebar.width") ?? 268) : RAIL_W;
   const start = Date.now(), run_id = (view.slide = (view.slide ?? 0) + 1);
   const ease = (k) => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
@@ -64,6 +63,21 @@ function paletteKey() {
 }
 
 export default class WorkspaceChrome extends View {
+  // The footer copy checks now and then what my-setup would flag (no network unless missing).
+  init(_p, cx) {
+    if (!props()?.footer) return;
+    this.missing = 0;
+    const check = (cx) => exec("python3", [`${appHome()}/mods/my-setup/status.py`], { timeout: 30000 })
+      .then((r) => {
+        const d = r.code === 0 ? JSON.parse(r.stdout) : {};
+        const n = ["gitlab", "openrouter"].filter((k) => d[k] && d[k].state !== "ok" && d[k].state !== "unknown").length;
+        if (n !== this.missing) { this.missing = n; cx.notify(); }
+      }).catch(() => {});
+    check(cx);
+    cx.timer.every(SETUP_EVERY, check);
+  }
+
+
   button(id, label, action) {
     const t = theme();
     return div().id(id).size(TOGGLE).flex_none().flex().items_center().justify_center().rounded(8).text_color(t.muted).hover(s => s.bg(t.hover).text_color(t.foreground))
@@ -74,16 +88,20 @@ export default class WorkspaceChrome extends View {
     const collapsed = narrow();
     if (props()?.footer) {
       // On the rail the rows are just their icons, centered.
-      const row = (id, icon, label, dim, action) => h_flex().id(id).h(TOGGLE).flex_none().px(8).gap(9).items_center().rounded(8).when(collapsed, el => el.px(0).w(TOGGLE).self_center().justify_center())
+      // badge: a dot over the icon's top-right corner (a color), or none.
+      const row = (id, icon, label, dim, action, badge = null) => h_flex().id(id).h(TOGGLE).flex_none().px(8).gap(9).items_center().rounded(8).when(collapsed, el => el.px(0).w(TOGGLE).self_center().justify_center())
         .text_color(dim ? t.dim : t.muted).hover(s => s.bg(t.hover).text_color(t.foreground))
-        .on_click(action).child(svg(`mods/my-chrome/${icon}.svg`).size(collapsed ? RAIL_ICON : 14))
+        .on_click(action).child(div().relative().flex_none()
+          .child(svg(`mods/my-chrome/${icon}.svg`).size(collapsed ? RAIL_ICON : 14))
+          .when(Boolean(badge), el => el.child(div().absolute().top(-2).right(-3).size(6).rounded_full().bg(badge))))
         .when(!collapsed, el => el.child(label));
       const key = paletteKey();
       return v_flex().size_full().bg(t.chrome).border_t(1).border_color(t.border).px(collapsed ? EDGE : 8).py(EDGE).gap(RAIL_GAP).text_size(13)
         .child(row("commands", "command", "Commands", false, () => run("app.palette"))
           .when(!collapsed && Boolean(key), el => el.child(div().flex_1()).child(div().text_size(11.5).text_color(t.dim).child(key))))
-        .child(row("settings", "settings", "Settings", false, () => run("app.settings"))
-          .when(Boolean(updates().app.ready), el => el.child(div().size(6).rounded_full().bg(t.accent))))
+        .child(row("settings", "settings", "Settings", false, () => run("app.settings"), updates().app.ready ? t.accent : null))
+        // Accounts & keys (my-setup); a dot while the GitLab login or the OpenRouter key is missing.
+        .child(row("accounts", "key-round", "Accounts & keys", false, () => run("mod.open", { name: "my-setup" }), this.missing > 0 ? t.ansi3 : null))
         .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
     }
 

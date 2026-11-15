@@ -8,7 +8,8 @@ agent's last message and the open commands, and maps the answer to a status:
 waiting -> working, need_user -> blocked, done and unclear -> none (the status
 stands). `blocked` and `working` agents are never asked about.
 
-The key is in <app home>/secrets/openrouter-decider.key, outside anything that
+The key is in <app home>/secrets/ (openrouter.key, set in my-setup; or the older
+openrouter-decider.key), outside anything that
 gets exported. The message and commands leave this computer, with common secret
 shapes masked first. Answers are cached, so a stopped agent is asked about once.
 
@@ -26,9 +27,9 @@ import time
 
 sys.dont_write_bytecode = True  # no __pycache__ in the mod folder
 from recap import HOME, claude_last, claude_sessions, hc, hc_terminals
+from common import log as common_log, openrouter_key, redact
 
 APP = os.environ.get("HERDR_APP_HOME") or os.path.join(HOME, ".config/herdr-app")
-KEY_FILE = os.path.join(APP, "secrets/openrouter-decider.key")
 CACHE_FILE = os.path.join(APP, "data/my-agents/decisions.json")
 LOG_FILE = os.path.join(APP, "data/my-agents/decisions.log")
 SEEN_FILE = os.path.join(APP, "data/my-agents/decisions-skipped.json")
@@ -52,24 +53,6 @@ QUESTION = {"agent_state": {
         "unclear": "The message and commands do not settle which of the other states applies.",
     },
 }}
-SECRETS = [
-    (re.compile(r"\b(sk|pk|rk)-[A-Za-z0-9_-]{12,}"), "***"),
-    (re.compile(r"\b(ghp|gho|ghs|ghu|github_pat|xox[abprs]|AKIA|AIza|glpat)[A-Za-z0-9_-]{10,}"), "***"),
-    (re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]*"), "***"),
-    (re.compile(r"(?i)\b(authorization|x-api-key|cookie)\s*:\s*[^'\"\n]+"), r"\1: ***"),
-    (re.compile(r"(?i)\bbearer\s+\S+"), "Bearer ***"),
-    (re.compile(r"(?i)([A-Z0-9_.-]*(?:token|secret|passw(?:or)?d|api[_-]?key)[A-Z0-9_.-]*)(\s*[=:]\s*)(['\"]?)[^\s'\"]+\3"), r"\1\2***"),
-    (re.compile(r"(?i)(--?[a-z0-9-]*(?:token|secret|passw(?:or)?d|api-?key)[a-z0-9-]*)\s+\S+"), r"\1 ***"),
-    (re.compile(r"://[^/\s:@]+:[^/\s@]+@"), "://***@"),
-]
-
-
-def redact(text):
-    for pattern, mask in SECRETS:
-        text = pattern.sub(mask, text)
-    return text
-
-
 def processes():
     out = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=10).stdout
     kids = {}
@@ -116,8 +99,7 @@ def last_message(session):
 
 def ask(state):
     import urllib.request  # only here: most runs never ask
-    with open(KEY_FILE) as f:
-        key = f.read().strip()
+    key = openrouter_key("openrouter-decider.key")
     body = json.dumps({"model": MODEL, "state": state, "questions": QUESTION}).encode()
     req = urllib.request.Request(URL, data=body, headers={
         "Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "herdr-agent-state/1.0"})
@@ -152,14 +134,7 @@ def save_json(path, obj):
 
 
 def log(entry):
-    try:
-        os.makedirs(os.path.dirname(LOG_FILE), exist_ok=True)
-        if os.path.exists(LOG_FILE) and os.path.getsize(LOG_FILE) > LOG_MAX:
-            os.replace(LOG_FILE, LOG_FILE + ".1")
-        with os.fdopen(os.open(LOG_FILE, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600), "a") as f:
-            f.write(json.dumps({"time": time.strftime("%Y-%m-%d %H:%M:%S"), **entry}, ensure_ascii=False) + "\n")
-    except OSError as e:
-        print(f"decide.py: log: {type(e).__name__}", file=sys.stderr)
+    common_log(LOG_FILE, entry, LOG_MAX)
 
 
 def skip(seen, context, reason):
@@ -230,7 +205,7 @@ def main():
                 skip(seen, context, "no_message" if not message else "short_message")
                 continue
             # Without a key nothing can be asked: say so once, rather than an error a minute.
-            if not os.path.exists(KEY_FILE):
+            if not openrouter_key("openrouter-decider.key"):
                 skip(seen, context, "no_key")
                 continue
             seen.pop(address, None)

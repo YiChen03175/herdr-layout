@@ -50,16 +50,23 @@ const RAIL_EDGE = 5;
 // opaque one moves SELECTED_LIFT of the way toward the text color.
 const SELECTED_BOOST = 1.35;
 const SELECTED_LIFT = 0.05;
+const SELECTED_MAX = 0xb0; // a boosted see-through color stays see-through
+// Worked out once per theme: rows, rail squares and recap dots all ask for it.
+let selectedFor = null;
 const selectedBg = (t) => {
-  const c = t.selected ?? "";
-  if (/^#[0-9a-f]{8}$/i.test(c)) {
-    const alpha = Math.min(255, Math.round(parseInt(c.slice(7), 16) * SELECTED_BOOST));
-    return c.slice(0, 7) + alpha.toString(16).padStart(2, "0");
+  const c = t.selected;
+  if (selectedFor?.c === c && selectedFor?.fg === t.foreground) return selectedFor.v;
+  let v = c;
+  if (/^#[0-9a-f]{8}$/i.test(c ?? "")) {
+    const a = parseInt(c.slice(7), 16);
+    v = c.slice(0, 7) + Math.max(a, Math.min(SELECTED_MAX, Math.round(a * SELECTED_BOOST))).toString(16).padStart(2, "0");
+  } else {
+    const rgb = (x) => (/^#[0-9a-f]{6}$/i.test(x ?? "") ? [1, 3, 5].map((i) => parseInt(x.slice(i, i + 2), 16)) : null);
+    const a = rgb(c), b = rgb(t.foreground);
+    if (a && b) v = "#" + a.map((x, i) => Math.round(x + (b[i] - x) * SELECTED_LIFT).toString(16).padStart(2, "0")).join("");
   }
-  const rgb = (x) => (/^#[0-9a-f]{6}$/i.test(x ?? "") ? [1, 3, 5].map((i) => parseInt(x.slice(i, i + 2), 16)) : null);
-  const a = rgb(c), b = rgb(t.foreground);
-  if (!a || !b) return c;
-  return "#" + a.map((x, i) => Math.round(x + (b[i] - x) * SELECTED_LIFT).toString(16).padStart(2, "0")).join("");
+  selectedFor = { c, fg: t.foreground, v };
+  return v;
 };
 
 // On the mini rail: a square as tall as the row, centered on its 18 px icon,
@@ -106,8 +113,6 @@ const ROW_H = 30 + 2, SUB_H = 26; // a row with its half gaps; a sub-agent row
 const POP_GAP = 4;
 const POP_LIFT = 6;
 
-// #rrggbb plus an alpha byte; other forms pass through.
-const alpha = (color, a) => /^#[0-9a-f]{6}$/i.test(color ?? "") ? color + a : color;
 // A localStorage value, or `fallback` when it's missing or unreadable.
 function stored(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
@@ -562,6 +567,15 @@ export default class Agents extends View {
     const small = collapsed && mini();
     const dx = small ? (sidebarW() - 16 - 18) / 2 - 8 : 0;
     const size = collapsed ? 18 : 16;
+    const hover = (on, cx) => { this.hoverNew = on; cx.notify(); };
+    // Opens beside the sidebar, its top level with this row, never over the sidebar.
+    const press = (e) => { this.newAt = e.position.y; };
+    const open = () => {
+      const z = settings().zoom || 1;
+      openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512,
+        at: { x: (sidebarW() + POP_GAP) * z, y: Math.max(0, (this.newAt ?? 0) - POP_LIFT * z) } });
+    };
+    // On the mini rail only the square you can see is clickable, not the row around it.
     return div().py(ROW_GAP / 2).child(h_flex()
       .id("ag-new")
       .h(30)
@@ -573,17 +587,11 @@ export default class Agents extends View {
       .text_color(t.muted)
       .when(!small, (el) => el.overflow_hidden().hover((s) => s.bg(t.hover).text_color(t.foreground)))
       .when(small, (el) => el.hover((s) => s.text_color(t.foreground)))
-      .on_hover((on, cx) => { this.hoverNew = on; cx.notify(); })
-      // Opens beside the sidebar, its top level with this row, never over the sidebar.
-      .on_mouse_down("left", (e) => { this.newAt = e.position.y; })
-      .on_click(() => {
-        const z = settings().zoom || 1;
-        openOverlay({ mod: "new-menu", kind: "popup", width: 250, height: 512,
-          at: { x: (sidebarW() + POP_GAP) * z, y: Math.max(0, (this.newAt ?? 0) - POP_LIFT * z) } });
-      })
+      .when(!small, (el) => el.on_hover(hover).on_mouse_down("left", press).on_click(open))
       .child(div().id("ag-new-icon").flex_none().relative().left(dx).transition("left", SLIDE)
         .size(size).flex().items_center().justify_center()
-        .when(small, (el) => el.child(railSquare(t, 30, false, Boolean(this.hoverNew))))
+        .when(small, (el) => el.child(railSquare(t, 30, false, Boolean(this.hoverNew))
+          .id("ag-new-sq").on_hover(hover).on_mouse_down("left", press).on_click(open)))
         .child(svg("mods/workspace-chrome/plus.svg").size(collapsed ? 16 : 15)))
       .child(div().id("ag-new-label").flex_1().min_w(0).truncate()
         .opacity(small ? 0 : 1).transition("opacity", FADE)
@@ -631,13 +639,15 @@ export default class Agents extends View {
     const head = div().w_full().text_size(12.5).font_semibold().text_color(t.foreground).whitespace_normal().child(name ?? "");
     // The folder on its own line, quieter than the title.
     const sub = () => div().w_full().text_size(10).text_color(t.muted).whitespace_normal().child(where ?? "");
-    // Anchored to a point at the row's top right: the card's top left goes there,
-    // then past the list's 8 px inset and the gap, and lifted a little.
-    return rowEl.relative().child(Popup.new(`recap-${a.address}`, div().w(1).h(1)).absolute().top(0).right(0).w(1).h(1).anchor("top_left")
-      .when(open && !r, (el) => el.content(div().pl(8 + POP_GAP).mt(-POP_LIFT).child(v_flex().max_w(RECAP_W).px(10).py(7).gap(2).rounded(8).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+    // Anchored to a point past the row's top right (the list's 8 px inset and the
+    // gap), lifted a little: the card's top left goes there. The gap is the anchor's,
+    // not padding on the card: the card's layer takes clicks, and padding would sit
+    // invisibly over the rail's square and swallow clicks on its edge.
+    return rowEl.relative().child(Popup.new(`recap-${a.address}`, div().w(1).h(1)).absolute().top(-POP_LIFT).right(-(8 + POP_GAP)).w(1).h(1).anchor("top_left")
+      .when(open && !r, (el) => el.content(div().child(v_flex().max_w(RECAP_W).px(10).py(7).gap(2).rounded(8).bg(t.popover).border(1).border_color(t.border).shadow_lg()
         .child(div().text_size(12.5).text_color(t.foreground).whitespace_normal().child(name ?? ""))
         .when(Boolean(where), (el) => el.child(sub())))))
-      .when(open && Boolean(r), (el) => el.content(div().pl(8 + POP_GAP).mt(-POP_LIFT).child(v_flex().w(RECAP_W).p(12).gap(6).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+      .when(open && Boolean(r), (el) => el.content(div().child(v_flex().w(RECAP_W).p(12).gap(6).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
         .when(Boolean(name) || Boolean(where), (el) => el.child(v_flex().w_full().gap(2)
           .when(Boolean(name), (el) => el.child(head))
           .when(Boolean(where), (el) => el.child(sub()))))
@@ -1004,6 +1014,7 @@ export default class Agents extends View {
         // Each row carries half the gap above and below: the same space between
         // rows everywhere, even across folded titles, and above the first one.
         const full = more || label(a) || a.program?.name || "";
+        const focus = (_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); };
         return div().py(ROW_GAP / 2).child(this.withRecap(t, a, h_flex()
           .id(`ag-${a.address}`)
           .on_mouse_down("right", this.rowMenu(a, archivedSet.has(a.address)))
@@ -1017,11 +1028,13 @@ export default class Agents extends View {
           // around the icon instead, which glides with it.
           .when(!small, (el) => el.overflow_hidden().when(a.focused, (el) => el.bg(selectedBg(t))).hover((s) => s.bg(t.hover))
             .on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx)))
-          .on_click((_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); })
+          // On the mini rail only the square you can see is clickable (below).
+          .when(!small, (el) => el.on_click(focus))
           .child(div().id(`ag-icon-${a.address}`).flex_none().relative().left(dx).transition("left", SLIDE)
             // Only the square you can see opens the card, not the rest of the rail's width.
             .when(small, (el) => el.child(railSquare(t, 30, a.focused, this.hovered === a.address)
-              .id(`ag-sq-${a.address}`).on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx))))
+              .id(`ag-sq-${a.address}`).on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx))
+              .on_click(focus)))
             .child(div().id(`ag-pic-${a.address}`).opacity(op === 0 ? 0 : small && a.status === "idle" ? IDLE_OPACITY : 1).transition("opacity", op === 1 ? FADE : PIC_FADE)
               .when(pulse, (el) => el.loop("opacity", PULSE))
               .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE))

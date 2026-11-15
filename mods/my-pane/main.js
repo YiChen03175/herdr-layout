@@ -5,7 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { panes, props, run, theme, home, shared } from "herdr";
+import { panes, props, run, openOverlay, theme, home, shared } from "herdr";
 
 // #rrggbb plus an alpha byte; other forms pass through.
 const alpha = (color, a) => /^#[0-9a-f]{6}$/i.test(color ?? "") ? color + a : color;
@@ -32,7 +32,10 @@ export default class Pane extends View {
       .hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => {
         cx.stop_propagation();
-        run(command, args);
+        // Close asks first, in the same red dialog as the tab and agent menus (my-confirm).
+        if (command === "pane.close") openOverlay({ mod: "my-confirm", kind: "dialog", width: 380, height: 170,
+          props: { danger: true, title: "Close pane?", detail: "The terminal in this pane will end.", command: { name: command, args } } });
+        else run(command, args);
       })
       .child(svg(`mods/my-pane/${icon}.svg`).size(14));
   }

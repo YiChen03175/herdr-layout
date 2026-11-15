@@ -4,7 +4,7 @@
 // while you haven't typed, and stays a click away once you have.
 import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { run, props, closeOverlay, theme, exec, appHome } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, exec, appHome } from "herdr";
 
 export default class Rename extends View {
   init(_props, cx) {
@@ -37,6 +37,7 @@ export default class Rename extends View {
         let name = null;
         try { name = r.code === 0 ? JSON.parse(r.stdout).name : null; } catch {}
         this.suggesting = false;
+        this.noKey = r.code === 3; // suggest.py's NO_KEY
         this.suggestion = name;
         if (name && !this.typed) this.use(name);
         cx.notify();
@@ -78,6 +79,8 @@ export default class Rename extends View {
     // Asked, answered, and no name came back.
     const failed = Boolean(p.terminal) && !this.suggesting && !this.suggestion;
     const hint = this.suggesting ? div().text_color(t.dim).child("Suggesting a name…")
+      : failed && this.noKey ? h_flex().gap(6).items_center().child(div().text_color(t.dim).child("Name suggestions need an OpenRouter key."))
+          .child(chip("rn-key", "Set key", () => { closeOverlay(p.overlay); openOverlay({ mod: "my-setup", kind: "dialog", width: 560, height: 600, props: { focus: "openrouter" } }); }))
       : failed ? div().text_color(t.dim).child("No suggestion this time.")
       : !this.suggestion ? null
       : shown ? h_flex().gap(6).items_center().child(div().text_color(t.dim).child("Suggested by Claude Haiku."))

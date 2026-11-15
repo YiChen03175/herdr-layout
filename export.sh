@@ -5,11 +5,12 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 APP="${HERDR_HOME:-$HOME/.config/herdr-app}"
-MODS="my-agents my-chrome my-confirm my-files my-gitlab my-menu my-pane my-rename my-spaces my-status my-tabs"
+# Every my-* mod on this machine (a new one comes along by itself).
+MODS="$(cd "$APP/mods" && ls -d my-* | tr '\n' ' ')"
 
 for m in $MODS; do
   mkdir -p "$REPO/mods/$m"
-  rsync -a --delete --exclude gpui-kit.d.ts --exclude jsconfig.json --exclude .DS_Store \
+  rsync -a --delete --exclude gpui-kit.d.ts --exclude jsconfig.json --exclude .DS_Store --exclude __pycache__ \
     "$APP/mods/$m/" "$REPO/mods/$m/"
 done
 cp "$APP/layouts/my-main.json" "$REPO/layouts/"
