@@ -8,10 +8,10 @@ agent's last message and the open commands, and maps the answer to a status:
 waiting -> working, need_user -> blocked, done and unclear -> none (the status
 stands). `blocked` and `working` agents are never asked about.
 
-The key is in <app home>/secrets/ (openrouter.key, set in my-setup; or the older
-openrouter-decider.key), outside anything that
-gets exported. The message and commands leave this computer, with common secret
-shapes masked first. Answers are cached, so a stopped agent is asked about once.
+The key is in <app home>/secrets/ (its own openrouter-decider.key if there is
+one, else openrouter.key from my-setup), outside anything that gets exported.
+The message and commands leave this computer, with common secret shapes masked
+first. Answers are cached, so a stopped agent is asked about once.
 
 Every request is a line in <app home>/data/my-agents/decisions.log: what was sent,
 what came back and the status it became. A stopped agent that wasn't asked about
@@ -26,10 +26,9 @@ import sys
 import time
 
 sys.dont_write_bytecode = True  # no __pycache__ in the mod folder
-from recap import HOME, claude_last, claude_sessions, hc, hc_terminals
-from common import log as common_log, openrouter_key, redact
+from recap import claude_last, claude_sessions, hc, hc_terminals
+from common import APP, log as common_log, openrouter_key, redact, write_json
 
-APP = os.environ.get("HERDR_APP_HOME") or os.path.join(HOME, ".config/herdr-app")
 CACHE_FILE = os.path.join(APP, "data/my-agents/decisions.json")
 LOG_FILE = os.path.join(APP, "data/my-agents/decisions.log")
 SEEN_FILE = os.path.join(APP, "data/my-agents/decisions-skipped.json")
@@ -53,6 +52,8 @@ QUESTION = {"agent_state": {
         "unclear": "The message and commands do not settle which of the other states applies.",
     },
 }}
+
+
 def processes():
     out = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,command="], capture_output=True, text=True, timeout=10).stdout
     kids = {}
@@ -97,12 +98,11 @@ def last_message(session):
     return text[-2000:] if text else None
 
 
-def ask(state):
+def ask(state, api_key):
     import urllib.request  # only here: most runs never ask
-    key = openrouter_key("openrouter-decider.key")
     body = json.dumps({"model": MODEL, "state": state, "questions": QUESTION}).encode()
     req = urllib.request.Request(URL, data=body, headers={
-        "Authorization": "Bearer " + key, "Content-Type": "application/json", "User-Agent": "herdr-agent-state/1.0"})
+        "Authorization": "Bearer " + api_key, "Content-Type": "application/json", "User-Agent": "herdr-agent-state/1.0"})
     started = time.time()
     with urllib.request.urlopen(req, timeout=15) as r:
         reply = json.load(r)
@@ -118,19 +118,13 @@ def ask(state):
 
 
 def load_json(path):
+    """The dict in a file of ours, or {} (none yet, or unreadable: it's only a cache)."""
     try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
         return {}
-
-
-def save_json(path, obj):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(obj, f)
-    os.replace(tmp, path)
 
 
 def log(entry):
@@ -144,7 +138,7 @@ def skip(seen, context, reason):
         log({**context, "skipped": reason})
 
 
-def judge(message, shells, ports_of, cache, context):
+def judge(message, shells, ports_of, cache, context, api_key):
     """The cached or new answer, or None while the model can't be reached.
     shells: [(pid, command)]; ports_of(pid) is only called when the model is asked."""
     message = redact(message)
@@ -158,8 +152,8 @@ def judge(message, shells, ports_of, cache, context):
     state = {"last_message": message,
              "open_commands": [{"command": c, "listening_ports": ports_of(pid)} for (pid, _), c in zip(shells, commands)]}
     try:
-        verdict, detail = ask(state)
-    except (OSError, ValueError, KeyError) as e:  # urllib's errors are OSErrors
+        verdict, detail = ask(state, api_key)
+    except Exception as e:  # unreachable, refused, or an answer not in the shape asked for: retried after RETRY_AFTER
         error = f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
         print(f"decide.py: {error}", file=sys.stderr)
         log({**context, "sent": state, "error": error})
@@ -179,6 +173,7 @@ def main():
     if stopped:
         kids, sessions, cache = processes(), claude_sessions(), load_json(CACHE_FILE)
         before = json.dumps(cache, sort_keys=True)
+        api_key = openrouter_key("openrouter-decider.key")
         lsof = None
 
         def ports_of(pid):
@@ -187,37 +182,39 @@ def main():
             lsof = listening() if lsof is None else lsof
             return sorted(set(lsof.get(pid, ())).union(*[lsof.get(c[0], ()) for c in walk(kids, pid)]))
 
-        for address in stopped:
-            t = hc("get", address)
-            if (t.get("status") or {}).get("app") != "claude-code":
-                continue
-            shells = [p for p in walk(kids, t["pid"]) if "/.claude/shell-snapshots/" in p[1]]
-            session = sessions.get((t.get("foreground") or {}).get("pid"))
-            context = {"terminal": address, "native": t["status"].get("state"), "session": session}
-            if not session:
-                skip(seen, context, "no_session")
-                continue
-            if not shells:
-                skip(seen, context, "no_open_shell")
-                continue
-            message = last_message(session)
-            if not message or len(message) < MIN_MESSAGE:
-                skip(seen, context, "no_message" if not message else "short_message")
-                continue
-            # Without a key nothing can be asked: say so once, rather than an error a minute.
-            if not openrouter_key("openrouter-decider.key"):
-                skip(seen, context, "no_key")
-                continue
-            seen.pop(address, None)
-            commands = [(pid, command_of(line) or " ".join(c[1] for c in kids.get(pid, []))[:COMMAND_MAX]) for pid, line in shells]
-            answer = judge(message, commands, ports_of, cache, context)
-            if answer:
-                out[address] = {"status": STATUS.get(answer["state"]), "state": answer["state"], "confidence": answer["confidence"]}
-        if json.dumps(cache, sort_keys=True) != before:
-            save_json(CACHE_FILE, dict(sorted(cache.items(), key=lambda kv: kv[1].get("at", 0))[-CACHE_MAX:]))
+        try:
+            for address in stopped:
+                t = hc("get", address)
+                if (t.get("status") or {}).get("app") != "claude-code":
+                    continue
+                shells = [p for p in walk(kids, t.get("pid")) if "/.claude/shell-snapshots/" in p[1]]
+                session = sessions.get((t.get("foreground") or {}).get("pid"))
+                context = {"terminal": address, "native": t["status"].get("state"), "session": session}
+                if not session:
+                    skip(seen, context, "no_session")
+                    continue
+                if not shells:
+                    skip(seen, context, "no_open_shell")
+                    continue
+                message = last_message(session)
+                if not message or len(message) < MIN_MESSAGE:
+                    skip(seen, context, "no_message" if not message else "short_message")
+                    continue
+                # Without a key nothing can be asked: say so once, rather than an error a minute.
+                if not api_key:
+                    skip(seen, context, "no_key")
+                    continue
+                seen.pop(address, None)
+                commands = [(pid, command_of(line) or " ".join(c[1] for c in kids.get(pid, []))[:COMMAND_MAX]) for pid, line in shells]
+                answer = judge(message, commands, ports_of, cache, context, api_key)
+                if answer:
+                    out[address] = {"status": STATUS.get(answer["state"]), "state": answer["state"], "confidence": answer["confidence"]}
+        finally:  # what was asked stays asked, even when a later agent fails this run
+            if json.dumps(cache, sort_keys=True) != before:
+                write_json(CACHE_FILE, dict(sorted(cache.items(), key=lambda kv: kv[1].get("at", 0))[-CACHE_MAX:]))
     seen = {k: v for k, v in seen.items() if k in stopped}  # a new stop logs again
     if seen != seen_before:
-        save_json(SEEN_FILE, seen)
+        write_json(SEEN_FILE, seen)
     json.dump(out, sys.stdout)
 
 

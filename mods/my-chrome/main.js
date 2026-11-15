@@ -63,20 +63,21 @@ function paletteKey() {
 }
 
 export default class WorkspaceChrome extends View {
-  // The footer copy checks now and then what my-setup would flag (no network unless missing).
+  // The footer copy checks now and then what my-setup would flag: the GitLab login (glab
+  // asks GitLab) and the OpenRouter key (local). Only those two are asked of status.py.
   init(_p, cx) {
     if (!props()?.footer) return;
     this.missing = 0;
-    const check = (cx) => exec("python3", [`${appHome()}/mods/my-setup/status.py`], { timeout: 30000 })
+    const flagged = ["gitlab", "openrouter"];
+    const check = (cx) => exec("python3", [`${appHome()}/mods/my-setup/status.py`, ...flagged], { timeout: 30000 })
       .then((r) => {
         const d = r.code === 0 ? JSON.parse(r.stdout) : {};
-        const n = ["gitlab", "openrouter"].filter((k) => d[k] && d[k].state !== "ok" && d[k].state !== "unknown").length;
+        const n = flagged.filter((k) => d[k] && d[k].state !== "ok" && d[k].state !== "unknown").length;
         if (n !== this.missing) { this.missing = n; cx.notify(); }
       }).catch(() => {});
     check(cx);
     cx.timer.every(SETUP_EVERY, check);
   }
-
 
   button(id, label, action) {
     const t = theme();

@@ -4,14 +4,16 @@
   suggest.py <terminal> [current name]
 
 For Claude Code: the session's title, how it started (the person's first
-messages), its latest compact summary, and its latest messages both ways; for anything else, the end of the terminal's screen. They go
-to Claude Haiku 5.5 (reasoning effort medium) on OpenRouter, with common secret
-shapes masked first. The key is in <app home>/secrets/ (openrouter.key from my-setup, or openrouter-rename.key),
-outside anything that gets exported. Every request is a line in
-<app home>/data/my-rename/suggest.log: the terminal, the answer, time, provider,
-whether it went on the account's own Anthropic key (BYOK) and the cost.
+messages), its latest compact summary, and its latest messages both ways; for
+anything else, the end of the terminal's screen. They go to Claude Haiku 5.5
+(reasoning effort medium) on OpenRouter, with common secret shapes masked first.
+The key is in <app home>/secrets/ (its own openrouter-rename.key if there is one,
+else openrouter.key from my-setup), outside anything that gets exported. Every
+request is a line in <app home>/data/my-rename/suggest.log: the terminal, the
+answer, time, provider, whether it went on the account's own Anthropic key
+(BYOK) and the cost.
 """
-import glob
+import http.client
 import json
 import os
 import re
@@ -19,17 +21,15 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
 import urllib.request
 
 # Shared with my-agents (installed alongside): secret masking, the log, the key.
 sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "my-agents"))
-from common import log as common_log, openrouter_key, redact  # noqa: E402
-from recap import claude_sessions  # noqa: E402
+from common import APP, log as common_log, openrouter_key, redact  # noqa: E402
+from recap import claude_sessions, claude_transcript, lines_backward  # noqa: E402
 
 HOME = os.path.expanduser("~")
-APP = os.environ.get("HERDR_APP_HOME") or os.path.join(HOME, ".config/herdr-app")
 NO_KEY = 3            # exit code without an OpenRouter key: the dialog offers to set one
 LOG_FILE = os.path.join(APP, "data/my-rename/suggest.log")
 URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -40,6 +40,7 @@ TAIL = 8              # the latest this many messages, both ways
 MESSAGE_MAX = 700     # characters kept of each (its end)
 SUMMARY_MAX = 3500    # characters of the latest compact summary (its start and end)
 SCREEN_MAX = 3000     # characters kept of a screen
+BACK_MAX = 8_000_000  # bytes of a transcript read back from its end, at most
 NAME_MAX = 40
 INSTRUCTIONS = (
     "You name terminal tabs. The session below gives how it started, a summary of the earlier work (if it was long) "
@@ -88,29 +89,12 @@ def entries(lines):
             continue
 
 
-def lines_backward(path, limit=8_000_000):
-    """Complete lines from the end of a file, last first (at most `limit` bytes back)."""
-    with open(path, "rb") as f:
-        f.seek(0, os.SEEK_END)
-        pos, rest, read = f.tell(), b"", 0
-        while pos > 0 and read < limit:
-            n = min(1 << 20, pos)
-            pos -= n; read += n
-            f.seek(pos)
-            parts = (f.read(n) + rest).split(b"\n")
-            rest = parts[0]
-            yield from reversed(parts[1:])
-        if pos == 0:
-            yield rest
-
-
 def claude_messages(session):
     """The session's start (the person's first messages), its latest compact summary,
     and its end (the latest messages both ways): the task, the story so far, now."""
-    files = glob.glob(os.path.join(HOME, ".claude/projects/*", session + ".jsonl"))
-    if not files:
+    path = claude_transcript(session)
+    if not path:
         return None
-    path = max(files, key=os.path.getmtime)
     head = []
     with open(path, "rb") as f:
         for e in entries(f):
@@ -124,7 +108,7 @@ def claude_messages(session):
         for line in lines:
             if len(tail) < TAIL or b'"isCompactSummary":true' in line or b'"ai-title"' in line:
                 yield line
-    for e in entries(wanted(lines_backward(path))):
+    for e in entries(wanted(lines_backward(path, BACK_MAX))):
         if e.get("type") == "ai-title" and not title:
             title = e.get("aiTitle")
         elif e.get("isCompactSummary") and not summary:
@@ -178,7 +162,7 @@ def main():
     kind, text = context(terminal)
     if not text:
         sys.exit("suggest.py: nothing to go on")
-    prompt = f"{INSTRUCTIONS}\n\nCurrent tab name: {current or '(none)'}\nProgram: {kind}\n\n<session>\n{redact(text)}\n</session>"
+    prompt = f"{INSTRUCTIONS}\n\nCurrent tab name: {redact(current) or '(none)'}\nProgram: {kind}\n\n<session>\n{redact(text)}\n</session>"
     body = json.dumps({"model": MODEL, "reasoning": {"effort": "medium"}, "max_tokens": 4000, "usage": {"include": True},
                        "messages": [{"role": "user", "content": prompt}]}).encode()
     req = urllib.request.Request(URL, data=body, headers={
@@ -187,7 +171,8 @@ def main():
     try:
         with urllib.request.urlopen(req, timeout=45) as r:
             reply = json.load(r)
-    except (OSError, urllib.error.URLError) as e:
+    except (OSError, ValueError, http.client.HTTPException) as e:  # urllib's errors are OSErrors
+        # Only the error's kind: some (a malformed header) quote the key.
         error = f"{type(e).__name__} {getattr(e, 'code', '')}".strip()
         log({"terminal": terminal, "error": error})
         sys.exit(f"suggest.py: {error}")
@@ -199,7 +184,9 @@ def main():
          "provider": reply.get("provider"), "byok": usage.get("is_byok"), "cost": usage.get("cost"),
          "upstream_cost": (usage.get("cost_details") or {}).get("upstream_inference_cost"),
          "tokens": [usage.get("prompt_tokens"), usage.get("completion_tokens"),
-                    (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")]})
+                    (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")],
+         # An answer can be an error with HTTP 200 (the provider failed): keep what it said.
+         **({"error": redact(json.dumps(reply["error"], ensure_ascii=False))[:300]} if reply.get("error") else {})})
     if not name:
         sys.exit("suggest.py: empty answer")
     json.dump({"name": name}, sys.stdout, ensure_ascii=False)

@@ -9,26 +9,36 @@
 # too narrow, the left side (folder, repo) is cut short with "…". The git branch
 # and worktree are on Herdr's bottom bar (mods/my-status), not here.
 
-input=$(cat)
+command -v jq >/dev/null || { echo "status line: needs jq (brew install jq)"; exit 0; }
 
-# Everything from the JSON in one jq call, one field per line.
+# Everything from the JSON on stdin in one jq call, one field per line. Each
+# field is read on its own (`try`): one that's missing or of an unexpected type
+# comes out empty instead of ending the rest. The context left is rounded here,
+# so the shell never parses a decimal (printf's %f follows the locale).
 {
     IFS= read -r model_name
     IFS= read -r current_dir
     IFS= read -r effort
     IFS= read -r repo
     IFS= read -r remaining
-} < <(printf '%s' "$input" | jq -r '
-    (.model.display_name // "Claude"),
-    (.workspace.current_dir // .cwd // ""),
-    (.effort.level // ""),
-    (.workspace.repo | if . then .owner + "/" + .name else "" end),
-    (.context_window.remaining_percentage // "" | tostring)')
+} < <(jq -r '
+    ((try .model.display_name catch null) // "Claude" | tostring),
+    ((try (.workspace.current_dir // .cwd) catch null) // "" | tostring),
+    ((try .effort.level catch null) // "" | tostring),
+    ([try (.workspace.repo | .owner, .name)] | map(strings | select(. != "")) | join("/")),
+    ((try (.context_window.remaining_percentage | tonumber | . + 0.5 | floor | tostring) catch null) // "")
+' 2>/dev/null)
 
-model_label="$model_name${effort:+@$effort}"
+model_label="${model_name:-Claude}${effort:+@$effort}"
 
-# Shorten home directory to ~
-short_dir="${current_dir/#$HOME/~}"
+# Shorten the home directory to a literal ~ (a whole component only: /Users/me2
+# stays as it is).
+# shellcheck disable=SC2088
+case "$current_dir" in
+    "$HOME") short_dir="~" ;;
+    "$HOME"/*) short_dir="~${current_dir#"$HOME"}" ;;
+    *) short_dir="$current_dir" ;;
+esac
 
 # Collapse long paths: keep first two and last two components -> a/b/…/y/z
 IFS='/' read -ra _parts <<< "$short_dir"
@@ -49,12 +59,11 @@ C_BLUE=$'\033[0;34m'
 # Context window remaining percentage, colored by how much is left
 ctx_plain="" ctx_color=""
 if [[ -n "$remaining" ]]; then
-    remaining_int=$(printf '%.0f' "$remaining")
-    if (( remaining_int <= 10 )); then ctx_color="$C_RED"
-    elif (( remaining_int <= 25 )); then ctx_color="$C_YELLOW"
+    if (( remaining <= 10 )); then ctx_color="$C_RED"
+    elif (( remaining <= 25 )); then ctx_color="$C_YELLOW"
     else ctx_color="$C_GREEN"
     fi
-    ctx_plain="ctx:${remaining_int}%"
+    ctx_plain="ctx:${remaining}%"
 fi
 
 # Right side: always whole.

@@ -16,6 +16,14 @@ const SECRETS = () => `${appHome()}/secrets`;
 const LOGIN_URL = () => `${appHome()}/data/my-setup/gitlab-login-url`;
 const REFRESH = 4000; // local checks while open, so an install finished in its tab shows up
 const GITLAB_EVERY = 20000; // GitLab asks the network: less often
+// Which status.py run answers for an item: GitLab's (slow, the network) or the local one.
+const groupOf = (id) => (id === "gitlab" ? "gitlab" : "local");
+
+// exec resolves on a failed run too: this throws its message instead.
+async function must(command, args) {
+  const r = await exec(command, args);
+  if (r.code !== 0) throw new Error(r.stderr.trim() || `${command} exited ${r.code}`);
+}
 
 // A new tab running a command (an install or a login), named for what it does.
 const inTab = (name, command) => run("tab.new", { name, argv: ["sh", "-c", `${command}; echo; echo "完成後可關閉此分頁。"; exec "\${SHELL:-/bin/zsh}" -l`] });
@@ -26,7 +34,8 @@ const brew = (pkg) => inTab(`Install ${pkg}`, `brew install ${pkg}`);
 const SLACK_MANIFEST = { display_information: { name: "Herdr" }, oauth_config: { scopes: { user: ["search:read"] } } };
 const SLACK_NEW_APP = `https://api.slack.com/apps?new_app=1&manifest_json=${encodeURIComponent(JSON.stringify(SLACK_MANIFEST))}`;
 
-// Buttons: [label, action, solid]. Solid only for what fixes a missing required item.
+// Buttons: [label, action, solid]. Solid: the one that sets up what's missing (for a
+// key, only a required one).
 const ITEMS = [
   // Logging in: glab's own web login (gitlab_login.py answers its questions), so
   // the browser opens GitLab's Authorize page and that's all.
@@ -52,8 +61,9 @@ export default class Setup extends View {
     this.failed = new Set(); // ids status.py couldn't answer for
     this.checking = new Set(ITEMS.map((i) => i.id)); // asked status.py, no answer yet
     this.busy = new Set(); // something the person started (save, login, logout) is running
-    this.inflight = new Set(); // status.py runs still out, by group
-    this.epoch = { gitlab: 0, local: 0 }; // answers asked before the last login/logout are dropped
+    this.inflight = { gitlab: 0, local: 0 }; // status.py runs still out, by group
+    // Bumped by each action on an item: an answer about it asked before then is dropped.
+    this.epoch = Object.fromEntries(ITEMS.map((i) => [i.id, 0]));
     this.note = {}; // id -> { text, kind: "error" | "progress" }
     this.touched = false; // the person did something: props.focus no longer highlights
     this.editing = props()?.focus && ITEMS.find((i) => i.id === props().focus)?.secret ? props().focus : null;
@@ -76,49 +86,54 @@ export default class Setup extends View {
   }
 
   // GitLab asks the network (seconds); the rest are local and come back at once.
+  // Each run is a task of this dialog, so an answer arriving after it closed is dropped.
   refreshAll(cx, first = false) {
-    this.refresh(cx, "local", ITEMS.map((i) => i.id).filter((id) => id !== "gitlab"));
-    if (first || Date.now() - (this.gitlabAt ?? 0) >= GITLAB_EVERY) this.refresh(cx, "gitlab", ["gitlab"]);
+    cx.spawn((cx) => this.refresh(cx, "local", ITEMS.map((i) => i.id).filter((id) => groupOf(id) === "local")));
+    // Not while a login or logout runs (it checks again when it's done), except the first time.
+    const due = !this.busy.has("gitlab") && Date.now() - (this.gitlabAt ?? 0) >= GITLAB_EVERY;
+    if (first || due) cx.spawn((cx) => this.refresh(cx, "gitlab", ["gitlab"]));
   }
 
-  // One periodic status.py run per group at a time; `force` (after an action) always runs.
-  refresh(cx, group, ids, args = ids, force = false) {
-    if (this.inflight.has(group) && !force) return Promise.resolve();
-    this.inflight.add(group);
+  // Asks status.py about `ids` (`args`: how) and shows the answers. One periodic run per
+  // group at a time, none while an action's own check is out; `force` (that check) always runs.
+  async refresh(cx, group, ids, args = ids, force = false) {
+    if (this.inflight[group] > 0 && !force) return;
+    this.inflight[group]++;
     if (group === "gitlab") this.gitlabAt = Date.now();
-    const epoch = this.epoch[group];
-    return exec("python3", [STATUS(), ...args], { timeout: 30000 })
-      .then((r) => JSON.parse(r.code === 0 ? r.stdout : "null"))
-      .catch(() => null)
-      .then((d) => {
-        if (epoch !== this.epoch[group]) return; // asked before an action changed things
-        for (const id of ids) {
-          if (d?.[id]) {
-            this.status[id] = d[id];
-            this.failed.delete(id);
-            // A stale error goes once the item is fine again.
-            if (d[id].state === "ok" && this.note[id]?.kind === "error") this.note[id] = null;
-          } else if (!this.status[id]) this.failed.add(id);
-          this.checking.delete(id);
-        }
-      })
-      .finally(() => { this.inflight.delete(group); cx.notify(); });
+    const asked = ids.map((id) => this.epoch[id]);
+    let d = null;
+    try {
+      const r = await exec("python3", [STATUS(), ...args], { timeout: 30000 });
+      if (r.code === 0) d = JSON.parse(r.stdout);
+    } catch {} // no answer: as if it had none for these ids
+    this.inflight[group]--;
+    ids.forEach((id, i) => {
+      if (asked[i] !== this.epoch[id]) return; // asked before an action changed it
+      if (d?.[id]) {
+        this.status[id] = d[id];
+        this.failed.delete(id);
+        // A stale error goes once the item is fine again.
+        if (d[id].state === "ok" && this.note[id]?.kind === "error") this.note[id] = null;
+      } else if (!this.status[id]) this.failed.add(id);
+      this.checking.delete(id);
+    });
+    cx.notify();
   }
 
-  // Something the person started on an item: answers already out for its group are stale.
+  // Something the person started on an item: answers already out about it are stale.
   start(id, note, cx) {
     this.touched = true;
     this.busy.add(id);
     this.note[id] = note;
-    this.epoch[id === "gitlab" ? "gitlab" : "local"]++;
+    this.epoch[id]++;
     cx.notify();
   }
 
   // ...and when it's done: the item checked again (`args`: how), then the note.
+  // Called from a task (cx.spawn), whose cx stays valid across the awaits.
   async finish(id, note, cx, args = [id]) {
-    const group = id === "gitlab" ? "gitlab" : "local";
-    this.epoch[group]++;
-    await this.refresh(cx, group, [id], args, true);
+    this.epoch[id]++;
+    await this.refresh(cx, groupOf(id), [id], args, true);
     this.busy.delete(id);
     this.note[id] = note;
     cx.notify();
@@ -126,9 +141,14 @@ export default class Setup extends View {
 
   edit(id, cx) {
     this.touched = true;
-    this.editing = this.editing === id ? null : id;
-    this.inputs[id].set_value("");
-    if (this.note[id]?.kind === "error") this.note[id] = null;
+    const left = this.editing;
+    this.editing = left === id ? null : id;
+    // The box opened (and the one closed) starts empty; an error about what was typed goes.
+    for (const k of new Set([left, id])) {
+      if (!k) continue;
+      this.inputs[k].set_value("");
+      if (this.note[k]?.kind === "error") this.note[k] = null;
+    }
     if (this.editing) this.inputs[id].focus(); else this.handle.focus();
     cx.notify();
   }
@@ -149,13 +169,17 @@ export default class Setup extends View {
       }).catch(() => {});
     };
     cx.timer.after(500, watch);
-    exec("python3", [LOGIN()], { timeout: 330000 })
-      .then((r) => JSON.parse(r.stdout))
-      .catch(() => ({ ok: false, error: "逾時" }))
-      .then((d) => {
-        this.loggingIn = false;
-        return this.finish("gitlab", d?.ok || this.cancelled ? null : { text: `登入失敗：${d?.error ?? "glab 無回應"}`, kind: "error" }, cx);
-      });
+    cx.spawn(async (cx) => {
+      let d;
+      try {
+        const r = await exec("python3", [LOGIN()], { timeout: 330000 });
+        try { d = JSON.parse(r.stdout); } catch { d = { ok: false }; } // no answer from it: "glab 無回應"
+      } catch {
+        d = { ok: false, error: "逾時" }; // exec gave up on it
+      }
+      this.loggingIn = false;
+      await this.finish("gitlab", d?.ok || this.cancelled ? null : { text: `登入失敗：${d?.error ?? "glab 無回應"}`, kind: "error" }, cx);
+    });
   }
 
   cancelLogin(cx) {
@@ -166,47 +190,52 @@ export default class Setup extends View {
   }
 
   copyLoginUrl(cx) {
-    exec("sh", ["-c", 'pbcopy < "$1"', "sh", LOGIN_URL()])
-      .then((r) => {
-        this.note.gitlab = r.code === 0 ? { text: "已複製授權連結，請在要使用的瀏覽器設定檔中開啟", kind: "progress" }
-          : { text: "授權連結已失效，請重新登入", kind: "error" };
-        cx.notify();
-      })
-      .catch(() => {});
+    cx.spawn(async (cx) => {
+      const r = await exec("sh", ["-c", 'pbcopy < "$1"', "sh", LOGIN_URL()]).catch(() => null);
+      if (!r || !this.loggingIn || this.cancelled) return; // the login ended meanwhile: its note stands
+      this.note.gitlab = r.code === 0 ? { text: "已複製授權連結，請在要使用的瀏覽器設定檔中開啟", kind: "progress" }
+        : { text: "授權連結已失效，請重新登入", kind: "error" };
+      cx.notify();
+    });
   }
 
   // Removes glab's saved login for gitlab.com (a GITLAB_TOKEN set elsewhere, e.g. a
-  // shell's, still works there).
+  // shell's, still works there). Whether it worked shows in the check that follows.
   gitlabLogout(cx) {
     if (this.busy.has("gitlab")) return;
     this.start("gitlab", { text: "登出中…", kind: "progress" }, cx);
-    exec("glab", ["auth", "logout", "--hostname", "gitlab.com"], { timeout: 20000 })
-      .catch(() => {})
-      .finally(() => this.finish("gitlab", null, cx));
+    cx.spawn(async (cx) => {
+      await exec("glab", ["auth", "logout", "--hostname", "gitlab.com"], { timeout: 20000 }).catch(() => {});
+      await this.finish("gitlab", null, cx);
+    });
   }
 
   // Saved under secrets/ (folder 0700, file 0600), then checked with the service.
-  async save(id, cx) {
+  save(id, cx) {
     const item = ITEMS.find((i) => i.id === id);
-    const value = this.inputs[id]?.value().trim();
     if (!item?.secret || this.busy.has(id)) return;
-    const fail = (text) => { this.note[id] = { text, kind: "error" }; cx.notify(); };
-    if (!value) return fail("請先貼上金鑰");
-    if (!value.startsWith(item.secret.prefix)) return fail(`格式不符：應以 ${item.secret.prefix} 開頭`);
-    const dir = SECRETS(), path = `${dir}/${item.secret.file}`;
-    try {
-      await exec("mkdir", ["-p", dir]);
-      await exec("chmod", ["700", dir]);
-      await writeTextFile(path, value + "\n", await readTextFile(path).catch(() => null));
-      await exec("chmod", ["600", path]);
-    } catch (e) {
-      return fail(`儲存失敗：${e?.message ?? e}`);
-    }
-    this.inputs[id].set_value("");
-    this.editing = null;
-    this.handle.focus();
-    this.start(id, { text: "已儲存，驗證中…", kind: "progress" }, cx);
-    await this.finish(id, null, cx, ["--verify", id]);
+    const value = this.inputs[id].value().trim();
+    const fail = (text, cx) => { this.note[id] = { text, kind: "error" }; cx.notify(); };
+    if (!value) return fail("請先貼上金鑰", cx);
+    if (!value.startsWith(item.secret.prefix)) return fail(`格式不符：應以 ${item.secret.prefix} 開頭`, cx);
+    this.busy.add(id); // from here on: a second Enter or 儲存 doesn't save it again
+    cx.spawn(async (cx) => {
+      const dir = SECRETS(), path = `${dir}/${item.secret.file}`;
+      try {
+        await must("mkdir", ["-p", dir]);
+        await must("chmod", ["700", dir]);
+        await writeTextFile(path, value + "\n", await readTextFile(path).catch(() => null));
+        await must("chmod", ["600", path]);
+      } catch (e) {
+        this.busy.delete(id);
+        return fail(`儲存失敗：${e?.message ?? e}`, cx);
+      }
+      this.inputs[id].set_value("");
+      this.editing = null;
+      this.handle.focus();
+      this.start(id, { text: "已儲存，驗證中…", kind: "progress" }, cx);
+      await this.finish(id, null, cx, ["--verify", id]);
+    });
   }
 
   key(e, cx) {

@@ -12,6 +12,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 
@@ -36,17 +37,24 @@ def window(w):
 
 def main():
     exe = shutil.which("claude") or os.path.join(HOME, ".local/bin/claude")
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    r = subprocess.run(
-        [exe, "-p", "--safe-mode", "--strict-mcp-config", "--no-session-persistence",
-         "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
-        input=json.dumps(REQUEST) + "\n", capture_output=True, text=True, timeout=45,
-        cwd=os.path.dirname(OUT))
+    os.makedirs(os.path.dirname(OUT), mode=0o700, exist_ok=True)
+    try:
+        r = subprocess.run(
+            [exe, "-p", "--safe-mode", "--strict-mcp-config", "--no-session-persistence",
+             "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+            input=json.dumps(REQUEST) + "\n", capture_output=True, text=True, timeout=45,
+            cwd=os.path.dirname(OUT))
+    except subprocess.TimeoutExpired:
+        sys.exit("usage.py: Claude Code didn't answer in time")
+    except OSError as e:
+        sys.exit(f"usage.py: can't run Claude Code ({type(e).__name__})")
     answer = None
     for line in r.stdout.splitlines():
         try:
             msg = json.loads(line)
         except ValueError:
+            continue
+        if not isinstance(msg, dict):
             continue
         resp = msg.get("response") or {}
         if msg.get("type") == "control_response" and resp.get("request_id") == "usage":
@@ -82,10 +90,15 @@ def main():
         week["fable"] = round(fable["pct"] * fable["cap"] / 100, 1)
     out = {"five_hour": window(limits.get("five_hour")), "week": week,
            "fable": fable, "plan": answer.get("subscription_type"), "at": int(time.time())}
-    tmp = OUT + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(out, f)
-    os.replace(tmp, OUT)
+    # In one step (my-setup's check reads it too), 0600.
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(OUT), prefix="usage.json.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(out, f)
+        os.replace(tmp, OUT)
+    except OSError:
+        os.remove(tmp)
+        raise
     json.dump(out, sys.stdout)
 
 

@@ -26,7 +26,7 @@ const BAR_W = 64;
 const BAR_H = 14;
 const DIGIT_W = 5.6; // about how wide one digit of the percent is
 const TRACK = 0.5;   // the empty part
-const SOFT = 0.6;    // the week's fill
+const SOFT = 0.6;    // every other fill (the week's, 5h)
 const BRIGHT = 1;    // Fable, alone and as its part of the week
 const HOT = 90; // percent from which a bar turns the "needs you" colour
 
@@ -46,7 +46,7 @@ export default class WorkspaceStatus extends View {
 
     this.usage = null; // {five_hour, week, fable, at}; each window {pct, resets} or null
     this.usageTried = 0;
-    cx.spawn(async (cx) => { this.take(await readTextFile(USAGE_FILE()), cx); this.fetch(cx); });
+    cx.spawn(async (cx) => { this.take(await readTextFile(USAGE_FILE()).catch(() => null), cx); this.fetch(cx); });
     cx.timer.every(USAGE_CHECK, (cx) => this.fetch(cx));
   }
 
@@ -78,7 +78,10 @@ export default class WorkspaceStatus extends View {
           next = { cwd, worktree: common === `${top}/.git` ? null : base(top), dirty: state === "dirty" };
         }
       } catch {}
-      this.asking = null;
+      // Focus may have moved on meanwhile: then a newer look is under way (or due), and
+      // this answer is about a folder no longer shown.
+      if (this.asking === cwd) this.asking = null;
+      if (cwd !== this.cwd()) return;
       if (JSON.stringify(next) !== JSON.stringify(this.git)) { this.git = next; cx.notify(); }
     });
   }

@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -33,8 +34,11 @@ def api(token, method, **params):
 
 def main():
     try:
-        token = open(TOKEN_FILE).read().strip()
-    except OSError:
+        with open(TOKEN_FILE, encoding="utf-8") as f:
+            token = f.read().strip()
+    except (OSError, ValueError):
+        token = ""
+    if not token:
         print("[]")
         return
     me = api(token, "auth.test")["user_id"]
@@ -58,5 +62,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:  # the panel goes on without Slack
-        print(f"slack.py: {type(e).__name__}: {e}", file=sys.stderr)
+        # Slack's own error, or why it couldn't be reached; of anything else only its kind,
+        # as some (a malformed header) quote the token.
+        said = f": {e}" if isinstance(e, (RuntimeError, urllib.error.URLError)) else ""
+        print(f"slack.py: {type(e).__name__}{said}", file=sys.stderr)
         sys.exit(1)

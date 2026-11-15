@@ -27,9 +27,11 @@ const narrow = () => sidebarW() < 160;
 // The rail shows names once there's room for a few letters; only near its narrowest do they go.
 const named = () => sidebarW() >= 110;
 // Once the search and toggle start sliding under the window buttons (my-chrome
-// shares where): Chrome-like, icons only, no titles. my-chrome
-// shares the rail width.
+// shares that width as "sidebar.slide"): Chrome-like, icons only, no titles.
 const mini = () => sidebarW() < (shared("sidebar.slide") ?? 114);
+// How far a mini rail icon glides to the sidebar's middle: past the list's 8 px
+// sides, the 18 px icon and the row's own 8 px padding.
+const railShift = () => (sidebarW() - 16 - 18) / 2 - 8;
 // How an icon shows a status there: blocked hops (as in the tab bar), working
 // pulses slowly, idle is a little faded, unread (done) is full.
 const BOUNCE = { from: 0, to: -3.5, period: 700, easing: "ease-in-out" };
@@ -76,9 +78,6 @@ const railSquare = (t, rowH, selected, hovered) => {
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
     .when(selected || hovered, (el) => el.bg(selected ? selectedBg(t) : t.hover));
 };
-// Recaps (Claude Code's and Grok's "while you were away" line): recap.py finds
-// each agent's latest one, until the person writes again. Checked every few
-// seconds; the agents write one a few minutes after a turn ends.
 // How often agents' states are compared (in-process, cheap): the corner note
 // Herdr puts up shows until the next look closes it, so look often.
 const MAC_EVERY = 100;
@@ -86,6 +85,9 @@ const MAC_EVERY = 100;
 // for at most TOAST_TRIES tries.
 const TOAST_RETRY = 40;
 const TOAST_TRIES = 10;
+// Recaps (Claude Code's and Grok's "while you were away" line): recap.py finds
+// each agent's latest one, until the person writes again. Checked every few
+// seconds; the agents write one a few minutes after a turn ends.
 const RECAP_EVERY = 5000;
 const RECAP_EVERY_AWAY = 30000; // while the window isn't in front
 // decide.py judges agents that stopped with shells still open. Its verdict is the
@@ -106,7 +108,7 @@ const CARD_LINE_H = 12.5 * 1.5; // one line of a card's text
 const ARCHIVE_AFTER = 6 * 3600000;
 // Standby shows its newest few; a button above them unfolds the rest, under the button.
 const ARCHIVE_SHOWN = 3;
-const ROW_H = 30 + 2, SUB_H = 26; // a row with its half gaps; a sub-agent row
+const ROW_H = 30 + ROW_GAP, SUB_H = 26; // a row with its half gaps; a sub-agent row
 // Popups from the sidebar (the + menu, a recap) open just clear of its edge, their
 // top a little above where the pointer is, so the first line reads level with it.
 // Near the bottom the app keeps them inside the window.
@@ -117,12 +119,16 @@ const POP_LIFT = 6;
 function stored(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 }
+const isOpencode = (a) => /^opencode/.test(a.app ?? "") || a.program?.key === "opencode";
 // Agents recap.py reads (Claude Code and Grok recaps, and the last reply of those and
 // opencode): without one alive it has nothing to find.
-const RECAPS = (a) => a.app === "claude-code" || /^(grok|opencode)/.test(a.app ?? "") || ["claude", "grok", "opencode"].includes(a.program?.key);
+const recapReads = (a) => a.app === "claude-code" || /^grok/.test(a.app ?? "") || ["claude", "grok"].includes(a.program?.key) || isOpencode(a);
 
 // A folder's last part ("~" for home).
-const folderName = (path) => (path.replace(/\/+$/, "") === home() ? "~" : path.replace(/\/+$/, "").split("/").pop() || path);
+const folderName = (path) => {
+  const p = path.replace(/\/+$/, "");
+  return p === home() ? "~" : p.split("/").pop() || path;
+};
 const clean = (s) => (s ?? "").replace(/^[^\p{L}\p{N}]+/u, "").trim();
 
 function leadPanes(all) {
@@ -226,6 +232,8 @@ export default class Agents extends View {
     this.decisions = { ...(shared("agents.effective") ?? {}) };
     this.effectiveMap = { ...this.decisions };
     this.holds = {};
+    // When each agent last stopped, until a verdict that started after it is in.
+    this.stopAt = {};
     this.decidedAt = 0;
     this.decideRunAt = 0;
     this.refreshDecisions(cx);
@@ -263,7 +271,8 @@ export default class Agents extends View {
       const status = done ? "Ready" : "Needs you", session = this.sessionTitle(a);
       // Another machine's folder can't be asked of git here: its name will do.
       const remote = a.address.includes("/");
-      this.agentCwd(a).then(async (cwd) => {
+      cx.spawn(async () => {
+        const cwd = await this.agentCwd(a);
         const repo = (remote ? null : await this.repoName(cwd)) ?? (cwd ? folderName(cwd) : a.space_name);
         this.macNotify(status, repo, session, a.address, a.program);
       });
@@ -371,7 +380,6 @@ export default class Agents extends View {
       });
   }
 
-
   // What an agent's status is once the verdicts are in (the map publishEffective
   // builds, the one other mods read). Only a stopped agent changes.
   effective(list) {
@@ -413,6 +421,7 @@ export default class Agents extends View {
       // Whatever was decided before this turn is about an older message.
       delete this.decisions[a.address];
       this.holds[a.address] = { at: now, done: a.status === "done" };
+      this.stopAt[a.address] = now;
       changed = true;
     }
     // Asked from the next holdStops (render has no cx for it).
@@ -493,7 +502,12 @@ export default class Agents extends View {
         const r = await exec("python3", [`${appHome()}/mods/my-agents/decide.py`], { timeout: 60000 });
         if (r.code === 0) {
           const next = {};
-          for (const [k, v] of Object.entries(JSON.parse(r.stdout.trim() || "{}"))) if (v.status) next[k] = v.status;
+          for (const [k, v] of Object.entries(JSON.parse(r.stdout.trim() || "{}"))) {
+            // Stopped again since this run started (as holdStops counts it): what it
+            // judged is the turn before; the run asked for that stop brings its verdict.
+            if (v.status && !(this.stopAt[k] >= started)) next[k] = v.status;
+          }
+          for (const [k, at] of Object.entries(this.stopAt)) if (at < started) delete this.stopAt[k];
           this.decisions = next;
           this.decidedAt = started;
           this.publishEffective();
@@ -510,7 +524,7 @@ export default class Agents extends View {
   refreshRecaps(cx) {
     if (this.recapBusy) return;
     const list = agents();
-    if (!list.some(RECAPS)) {
+    if (!list.some(recapReads)) {
       if (this.recapRaw && this.recapRaw !== "{}") { this.recapRaw = "{}"; this.recaps = {}; cx.notify(); }
       return;
     }
@@ -520,7 +534,7 @@ export default class Agents extends View {
     cx.spawn(async (cx) => {
       try {
         // opencode's replies cost recap.py an `hc ls` and more: only when one is open.
-        const opencode = list.some((a) => /^opencode/.test(a.app ?? "") || a.program?.key === "opencode");
+        const opencode = list.some(isOpencode);
         const r = await exec("python3", [`${appHome()}/mods/my-agents/recap.py`, ...(opencode ? ["--opencode"] : [])]);
         const raw = r.code === 0 ? r.stdout.trim() || "{}" : null;
         if (raw !== null && raw !== this.recapRaw) {
@@ -554,18 +568,19 @@ export default class Agents extends View {
   }
 
   // A small white dot on the icon's top right: this agent has a recap. A ring
-  // in the row's own color around it cuts it out of the icon.
-  recapDot(t, a) {
-    const ring = this.hovered === a.address ? t.hover : a.focused ? selectedBg(t) : t.chrome;
+  // in the row's own color around it cuts it out of the icon. A row's hover color
+  // covers its selected one; on the mini rail (small) the square's is the other way round.
+  recapDot(t, a, small) {
+    const hovered = this.hovered === a.address;
+    const ring = a.focused && (small || !hovered) ? selectedBg(t) : hovered ? t.hover : t.chrome;
     return div().absolute().top(-2.5).right(-3.5).p(1.5).rounded_full().bg(ring)
       .when(!this.recapOf(a.address), (el) => el.opacity(0))
       .child(div().size(4.5).rounded_full().bg(t.foreground));
   }
 
   // The first row: a new tab (a terminal or an agent), as the tab bar's + did.
-  newRow(t, collapsed) {
-    const small = collapsed && mini();
-    const dx = small ? (sidebarW() - 16 - 18) / 2 - 8 : 0;
+  // small: the mini rail; dx: how far its icon glides to the middle (railShift).
+  newRow(t, collapsed, small, dx) {
     const size = collapsed ? 18 : 16;
     const hover = (on, cx) => { this.hoverNew = on; cx.notify(); };
     // Opens beside the sidebar, its top level with this row, never over the sidebar.
@@ -614,14 +629,14 @@ export default class Agents extends View {
   }
 
   hoverRecap(a, on, cx) {
-    if (!on) this.hoverBox = null;
     if (on) {
       this.hovered = a.address;
       if (this.recapOf(a.address) || this.recaps?.[a.address]?.last || narrow()) cx.timer.after(RECAP_DELAY, (cx) => {
         if (this.hovered === a.address && this.recapOpen !== a.address && this.menuFor !== a.address) { this.recapOpen = a.address; cx.notify(); }
       });
     } else {
-      if (this.hovered === a.address) this.hovered = null;
+      // The next row's entry can come before this one's exit: its bounds stay.
+      if (this.hovered === a.address) { this.hovered = null; this.hoverBox = null; }
       if (this.recapOpen === a.address) this.recapOpen = null;
       // The row menu's pointer left the row: hovering it again may show the card.
       if (this.menuFor === a.address) this.menuFor = null;
@@ -636,7 +651,8 @@ export default class Agents extends View {
     const last = recap ? null : this.recaps?.[a.address]?.last;
     const r = recap ?? last;
     const open = (Boolean(r) || narrow()) && this.recapOpen === a.address && this.menuFor !== a.address;
-    const head = div().w_full().text_size(12.5).font_semibold().text_color(t.foreground).whitespace_normal().child(name ?? "");
+    // Built only for an open card: every row comes through here on every render.
+    const head = () => div().w_full().text_size(12.5).font_semibold().text_color(t.foreground).whitespace_normal().child(name ?? "");
     // The folder on its own line, quieter than the title.
     const sub = () => div().w_full().text_size(10).text_color(t.muted).whitespace_normal().child(where ?? "");
     // Anchored to a point past the row's top right (the list's 8 px inset and the
@@ -649,7 +665,7 @@ export default class Agents extends View {
         .when(Boolean(where), (el) => el.child(sub())))))
       .when(open && Boolean(r), (el) => el.content(div().child(v_flex().w(RECAP_W).p(12).gap(6).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
         .when(Boolean(name) || Boolean(where), (el) => el.child(v_flex().w_full().gap(2)
-          .when(Boolean(name), (el) => el.child(head))
+          .when(Boolean(name), (el) => el.child(head()))
           .when(Boolean(where), (el) => el.child(sub()))))
         // A small pill naming the text, then the text under it. Last reply: at most
         // five lines, should recap.py's guess of the width be short.
@@ -665,7 +681,7 @@ export default class Agents extends View {
 
   // Stamps agents whose state changed. Done and idle count as one: looking at a
   // finished agent turns done into idle, and looking isn't the agent doing anything.
-  track(list, now) {
+  stampChanges(list, now) {
     let dirty = false;
     for (const a of list) {
       const s = a.status === "done" ? "idle" : a.status;
@@ -703,6 +719,11 @@ export default class Agents extends View {
 
   since(a) {
     return this.changed[a.address]?.at ?? 0;
+  }
+
+  // Folds or unfolds a group (by its id) or an agent's sub-agents (by its address).
+  toggleFold(key) {
+    if (!this.folded.delete(key)) this.folded.add(key);
   }
 
   // A looked-at agent keeps its status until you leave it (look), so its place too.
@@ -796,7 +817,7 @@ export default class Agents extends View {
         if (!m.pinned && m.archived) setArchived(false);
       }))
       // Closes its pane (the tab too when it's the only one), as the tab's own Close does;
-      // one without a pane (sent back) is ended. Asks first, in Herdr's confirm dialog.
+      // one without a pane (sent back) is ended. Asks first, in my-confirm's dialog.
       .child(div().h(1).mx(6).my(4).bg(t.border))
       .child(item("am-close", "workspace-chrome/x", "Close", () => openOverlay({
         mod: "my-confirm", kind: "dialog", width: 380, height: 170,
@@ -894,6 +915,8 @@ export default class Agents extends View {
     if (props()?.agentMenu) return this.agentMenu(t);
     this.gifs = 0; // Clawds drawn this time, counted by row()
     const collapsed = narrow();
+    const small = collapsed && mini();
+    const dx = small ? railShift() : 0;
     const sort = sortOf();
     const raw = agents();
     this.catchStops(raw);
@@ -909,7 +932,7 @@ export default class Agents extends View {
     this.migratePins(all);
     const shown = focused()?.agent;
     const now = Date.now();
-    this.track(list, now);
+    this.stampChanges(list, now);
     const byPriority = sort.id === "priority";
     const kidsOf = new Map();
     for (const k of all) if (k.parent && k.state === "live") kidsOf.set(k.parent, [...(kidsOf.get(k.parent) ?? []), k]);
@@ -937,10 +960,10 @@ export default class Agents extends View {
     }
     setAgentOrder(list.filter((a) => !a.shell).map((a) => a.address));
 
-    const withKids = (a, i) => {
+    const withKids = (a) => {
       const subs = collapsed ? [] : subsOf.get(a.address);
       // Full rows get the rail rows' half gap too: crossing the rail's edge moves nothing.
-      const r = collapsed ? row(a, i, subs) : div().py(ROW_GAP / 2).child(row(a, i, subs));
+      const r = collapsed ? row(a, subs) : div().py(ROW_GAP / 2).child(row(a, subs));
       if (this.folded.has(a.address)) return [r];
       return [r, ...subs.map((s) => this.subRow(t, s, shown))];
     };
@@ -963,17 +986,15 @@ export default class Agents extends View {
         .hover((s) => s.bg(t.hover).text_color(t.foreground))
         .on_click((_e, cx) => {
           cx.stop_propagation();
-          open ? this.folded.add(a.address) : this.folded.delete(a.address);
+          this.toggleFold(a.address);
           cx.notify();
         })
         .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
         .when(!open, (el) => el.child(String(subs.length)));
     };
 
-    // A row reads "space \u00b7 detail": the detail is a tab someone named or the
-    // agent's own title, never an automatic tab number unless two rows would
-    // otherwise read the same.
-    // Read the pane snapshot once: every host read copies the whole list into JS.
+    // A row's detail: a tab someone named or the agent's own title, never an
+    // automatic tab number unless two rows in a space would otherwise read the same.
     const leads = leadPanes(paneList);
     const tabLabels = new Map(spaceList.flatMap(s => s.tabs).map(tab => [tab.id, title(tab, leads.get(tab.id))]));
     const labels = new Map(list.map(a => [a.address, tabLabels.get(a.tab) ?? (a.title || a.program?.name || "")]));
@@ -993,28 +1014,25 @@ export default class Agents extends View {
       return !a.address.includes("/") && (p === home() || p.startsWith(`${home()}/`)) ? `~${p.slice(home().length)}` : p;
     };
 
-    const row = (a, i, subs = []) => {
+    const row = (a, subs = []) => {
       const { gif, op } = this.picFade(a, cx);
       if (gif) this.gifs++;
-      const pic = gif ? clawdPic(gif, 16) : icon(a.program, 16, t.foreground);
       const more = detail.get(a.address);
-      // An agent on another machine (`vps/t7`) says which.
-      const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
+      // A row never names its space, header above or not; an automatic tab number says nothing.
+      const name = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
+      // The icon is the status (no spinner, dot or tag at the row's end): Clawd shows
+      // it itself; other icons hop when blocked and pulse while working.
+      const hop = a.status === "blocked" && !gif;
+      const pulse = a.status === "working" && !gif;
+      const focus = (_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); };
       // A rail row (narrow sidebar): as tall as a full row, the icon, then the name.
-      // The icon is the status, as on a full row (blocked hops, working pulses).
       // On the mini rail the icon glides to the middle, the name fades out, and an
       // idle icon fades too.
       if (collapsed) {
-        const small = mini();
-        const short = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
-        // Clawd shows the status itself: no hop, pulse or fade on top.
-        const hop = a.status === "blocked" && !gif;
-        const pulse = a.status === "working" && !gif;
-        const dx = small ? (sidebarW() - 16 - 18) / 2 - 8 : 0;
+        // The hover card's title.
+        const full = more || label(a) || a.program?.name || "";
         // Each row carries half the gap above and below: the same space between
         // rows everywhere, even across folded titles, and above the first one.
-        const full = more || label(a) || a.program?.name || "";
-        const focus = (_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); };
         return div().py(ROW_GAP / 2).child(this.withRecap(t, a, h_flex()
           .id(`ag-${a.address}`)
           .on_mouse_down("right", this.rowMenu(a, archivedSet.has(a.address)))
@@ -1038,18 +1056,17 @@ export default class Agents extends View {
             .child(div().id(`ag-pic-${a.address}`).opacity(op === 0 ? 0 : small && a.status === "idle" ? IDLE_OPACITY : 1).transition("opacity", op === 1 ? FADE : PIC_FADE)
               .when(pulse, (el) => el.loop("opacity", PULSE))
               .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE))
-                .child(gif ? clawdPic(gif, 18) : Boolean(pic) ? icon(a.program, 18, t.foreground) : div().size(18))))
-            .child(this.recapDot(t, a)))
+                .child(gif ? clawdPic(gif, 18) : icon(a.program, 18, t.foreground) ?? div().size(18))))
+            .child(this.recapDot(t, a, small)))
           .child(div().id(`ag-name-${a.address}`).flex_1().min_w(0).truncate().text_color(a.status === "idle" && !a.focused ? t.muted : t.foreground)
             .opacity(small ? 0 : 1).transition("opacity", FADE)
-            .when(named(), (el) => el.child(short))), full, place(a)));
+            .when(named(), (el) => el.child(name))), full, place(a)));
       }
+      const pic = gif ? clawdPic(gif, 16) : icon(a.program, 16, t.foreground);
+      // An agent on another machine (`vps/t7`) says which.
+      const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
-      // The icon is the status (no spinner, dot or tag at the row's end): Clawd shows
-      // it itself; other icons hop when blocked and pulse while working, as on the rail.
-      const hop = a.status === "blocked" && !gif;
-      const pulse = a.status === "working" && !gif;
       const isPinned = a.pinned;
       const pin = div()
         .id(`pin-${a.address}`)
@@ -1062,13 +1079,11 @@ export default class Agents extends View {
         .on_click((_e, cx) => {
           cx.stop_propagation();
           run("terminal.pin", { terminal: a.address, pinned: !isPinned });
-          // The row moves away from under the pointer, and no hover-out comes.
-          this.hovered = null;
-          cx.notify();
+          // The row moves away from under the pointer, and no hover-out comes:
+          // leave it here, card and all.
+          this.hoverRecap(a, false, cx);
         })
         .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
-      // A row never names its space, header above or not; an automatic tab number says nothing.
-      const name = more ?? (/^\d+$/.test(label(a)) ? a.program?.name || label(a) : label(a));
       return this.withRecap(t, a, h_flex()
         .id(`ag-${a.address}`)
         .on_mouse_down("right", this.rowMenu(a, archivedSet.has(a.address)))
@@ -1082,16 +1097,16 @@ export default class Agents extends View {
         .hover((s) => s.bg(t.hover))
         .on_hover((on, cx) => this.hoverRecap(a, on, cx))
         .on_mouse_move((e, cx) => this.trackHover(a, e, cx))
-        .on_click((_e, cx) => { this.seeRecap(a.address); run("pane.focus", { pane: a.pane }); cx.notify(); })
+        .on_click(focus)
         .when(Boolean(pic), el => el.child(div().id(`agent-fold-${a.address}`)
           .when(subs.length > 0, el => el.on_click((_e, cx) => {
             cx.stop_propagation();
-            this.folded.has(a.address) ? this.folded.delete(a.address) : this.folded.add(a.address);
+            this.toggleFold(a.address);
             cx.notify();
           })).relative().child(div().id(`ag-picf-${a.address}`).opacity(op).transition("opacity", PIC_FADE)
             .child(div().when(pulse, (el) => el.loop("opacity", PULSE))
               .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE)).child(pic))))
-          .child(this.recapDot(t, a))))
+          .child(this.recapDot(t, a, false))))
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()
           .child(div().min_w(0).max_w(200).truncate().text_color(idle ? t.muted : t.foreground).child(name)))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
@@ -1130,7 +1145,7 @@ export default class Agents extends View {
         .font_medium()
         .hover((s) => s.text_color(t.foreground))
         .on_click((_e, cx) => {
-          open ? this.folded.add(g.id) : this.folded.delete(g.id);
+          this.toggleFold(g.id);
           cx.notify();
         })
         .child(div().min_w(0).truncate().text_color(t[g.status ?? (!open && top !== "idle" ? top : null)] ?? t.dim).child(g.label))
@@ -1145,15 +1160,15 @@ export default class Agents extends View {
     // folded: what's left of it on the mini rail (a row's half gap; the title
     // keeps enough that the first square is RAIL_EDGE below the section's edge).
     const foldAway = (key, h, el, folded = ROW_GAP / 2) => collapsed
-      ? div().id(key).flex_none().h(mini() ? folded : h).overflow_hidden().opacity(mini() ? 0 : 1)
+      ? div().id(key).flex_none().h(small ? folded : h).overflow_hidden().opacity(small ? 0 : 1)
         .transition("height", SLIDE).transition("opacity", FADE).child(el)
       : el;
     // The mini rail has no titles: every agent, in the same order, folded groups too.
     // A slot is a row's place that slides between 0 and its height. keep: its rows
     // stay while it shuts (else they go at once and only the space slides).
     const slotH = (a, open) => (open ? ROW_H + (collapsed || this.folded.has(a.address) ? 0 : subsOf.get(a.address).length * SUB_H) : 0);
-    const titleH = collapsed && mini() ? ROW_GAP / 2 : 30;
-    const shownIn = (g) => !this.folded.has(g.id) || (collapsed && mini());
+    const titleH = small ? ROW_GAP / 2 : 30;
+    const shownIn = (g) => !this.folded.has(g.id) || small;
     // The list from the top, for moves(): the pinned area, then each group.
     this.moves([
       ...live.map((a) => [`ps-${a.address}`, slotH(a, a.pinned), true]),
@@ -1173,7 +1188,7 @@ export default class Agents extends View {
     // The pinned area: at the top, a line under it. The + row ends the list (above Standby).
     const pinRows = [...live.map((a) => slot(`ps-${a.address}`, a.pinned, a)),
       // The line under it, with a small solid pin in its middle (white, see-through).
-      this.moved("pin-line", div().id("pin-line")).flex_none().mx(-8).px(collapsed && mini() ? 9 : 20).overflow_hidden().h(pinned.length ? 14 : 0).transition("height", SLIDE)
+      this.moved("pin-line", div().id("pin-line")).flex_none().mx(-8).px(small ? 9 : 20).overflow_hidden().h(pinned.length ? 14 : 0).transition("height", SLIDE)
         // Line and pin share one color; on the mini rail the line reaches into the list's padding.
         .child(h_flex().h(14).gap(1).items_center().opacity(0.2)
           .child(div().flex_1().h(1).rounded_full().bg(pinInk))
@@ -1183,12 +1198,11 @@ export default class Agents extends View {
     const archive = { id: "archived", label: "Standby", status: null, members: old };
     const byAge = [...old].sort((x, y) => this.since(x) - this.since(y));
     const older = byAge.slice(0, Math.max(0, byAge.length - ARCHIVE_SHOWN)), newest = byAge.slice(older.length);
-    const more = this.archiveMore && older.length > 0;
+    const olderOpen = this.archiveMore && older.length > 0;
     // Older ones slide open and shut (the section, sitting on the bottom, grows
     // upward); shut, they're only built while the slide is still going.
     const shutting = Date.now() - (this.archiveAt ?? 0) < SLIDE.duration + 50;
-    const slide = (a) => slot(`arc-${a.address}`, more, a, shutting);
-    const small = collapsed && mini();
+    const slide = (a) => slot(`arc-${a.address}`, olderOpen, a, shutting);
     // Folded: ⌃ with how many more under it; open: the fold-in icon, no number.
     // On the rail it's a square, like the rows.
     const unfold = v_flex().w(16).h(24).flex_none().items_center().justify_center()
@@ -1198,8 +1212,8 @@ export default class Agents extends View {
       .when(small, (el) => el.w(30).self_center().justify_center().px(0))
       .text_size(11).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => { this.archiveMore = !this.archiveMore; this.archiveAt = Date.now(); cx.notify(); })
-      .child(more ? svg("mods/my-agents/chevrons-down-up.svg").size(12).flex_none() : unfold)
-      .when(!small, (el) => el.child(more ? "Show less" : "more"));
+      .child(olderOpen ? svg("mods/my-agents/chevrons-down-up.svg").size(12).flex_none() : unfold)
+      .when(!small, (el) => el.child(olderOpen ? "Show less" : "more"));
     const archiveRows = old.length ? [foldAway("agh-archived", 30, header(archive)),
       ...(this.folded.has("archived") && !small ? [] : [
         // The button stays on top: the older ones open under it (the section grows upward).
@@ -1239,7 +1253,7 @@ export default class Agents extends View {
       .when(list.length === 0 && !collapsed, (el) =>
         el.child(div().px(12).text_size(12).text_color(t.dim).child("No agent status yet. Agents show up here when they report their status. Older versions and agents inside tmux may not.")),
       )
-      .child(v_flex().id("ag-list").flex_1().min_h(0).px(8).overflow_y_scrollbar().mode("always").children(pinRows).children(rows).child(this.newRow(t, collapsed))
+      .child(v_flex().id("ag-list").flex_1().min_h(0).px(8).overflow_y_scrollbar().mode("always").children(pinRows).children(rows).child(this.newRow(t, collapsed, small, dx))
         // Standby sits at the bottom: a spacer takes what the list leaves.
         .when(archiveRows.length > 0, (el) => el.child(div().flex_1().min_h(8)).children(archiveRows).child(div().h(6).flex_none())))
       // Load every Clawd frame once, unseen, so the first time they're needed none is blank.

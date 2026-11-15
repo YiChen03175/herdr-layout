@@ -15,6 +15,7 @@ itself and stores the login (with its refresh token) in its own config.
 """
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -73,11 +74,14 @@ def forget_url():
 
 
 def keep_url(url):
-    os.makedirs(os.path.dirname(URL_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(URL_FILE), mode=0o700, exist_ok=True)
     fd = os.open(URL_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(url)
-    subprocess.run(["open", url])
+    try:
+        subprocess.run(["open", url], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        sys.exit(1)  # glab says it couldn't open a browser; the dialog can still copy the URL
 
 
 def main():
@@ -90,9 +94,16 @@ def main():
         done(ok=False, error="未安裝 glab")
     hc("kill", NAME)  # an earlier attempt still waiting
     forget_url()
+    # The terminal gets herdr-core's environment, not this one: what must match is passed on.
+    # HERDR_APP_HOME: --open keeps the URL where the dialog looks; GLAB_CONFIG_DIR: glab
+    # saves the login where logged_in() reads it.
+    same = [f"HERDR_APP_HOME={APP}"]
+    if os.environ.get("GLAB_CONFIG_DIR"):
+        same.append(f"GLAB_CONFIG_DIR={os.environ['GLAB_CONFIG_DIR']}")
+    browser = f"{shlex.quote(sys.executable)} {shlex.quote(os.path.abspath(__file__))} --open"  # glab splits it like sh
     code, _ = hc("run", "--bg", "--no-notify", "--rm", "--name", NAME,
-                 "env", "-u", "GITLAB_TOKEN", "-u", "GITLAB_ACCESS_TOKEN", "-u", "OAUTH_TOKEN",
-                 f"BROWSER={sys.executable} {os.path.abspath(__file__)} --open",
+                 "env", "-u", "GITLAB_TOKEN", "-u", "GITLAB_ACCESS_TOKEN", "-u", "OAUTH_TOKEN", *same,
+                 f"BROWSER={browser}",
                  "glab", "auth", "login", "--hostname", "gitlab.com")  # any other flag makes it non-interactive: no Web
     if code != 0:
         done(ok=False, error="無法啟動背景終端機（hc run）")

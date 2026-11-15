@@ -1,7 +1,8 @@
 // Workspace spaces: stable colored avatars, worktrees under their checkout,
-// grouped by machine when more than one is known. After a space's name, the repo
-// its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
-// switch, right-click for its menu, drag to reorder.
+// grouped by machine when more than one is known. After a space's name, the
+// repo its first terminal is in now, only where unusual: branch, ahead/behind.
+// Agent state lives in the agents list, not here. Click to switch, right-click
+// for its menu, drag to reorder.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
@@ -16,19 +17,6 @@ function find(node, id) {
   return null;
 }
 
-// The sidebar's rail goes by its width, not a flag: dragging its edge narrows it too.
-// The sidebar's width as drawn: measured live, since the layout's own number only
-// changes when a drag of the edge ends. Before the first measure, the layout's.
-let liveW = null;
-const sidebarW = () => liveW ?? (find(layout(), "sidebar")?.size?.px ?? Infinity);
-const track = (el) => el.on_size_change((size, cx) => {
-  const w = size.width / (settings().zoom || 1);
-  if (liveW === null || Math.abs(w - liveW) > 0.25) { liveW = w; cx.notify(); }
-});
-// An avatar's letter. A space someone named shows its name's; an unnamed one
-// (named after where its first terminal is, so it changes with every cd) keeps
-// the first real name's letter it was seen with. "~" isn't one: home shows "~"
-// until the space first goes somewhere with a name.
 // Folding to the mini rail and back: the title collapses, avatars glide, the rest fades.
 const SLIDE = { duration: 200, easing: "ease-out" };
 const FADE = { duration: 160, easing: "ease-out" };
@@ -43,18 +31,14 @@ const railSquare = (t, rowH, selected, hovered) => {
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
     .when(selected || hovered, (el) => el.bg(selected ? t.selected : t.hover));
 };
+// An avatar's letter. A space someone named shows its name's; an unnamed one
+// (named after where its first terminal is, so it changes with every cd) keeps
+// the first real name's letter it was seen with. "~" isn't one: home shows "~"
+// until the space first goes somewhere with a name.
 function letter(w) {
   if (w.named) return [...w.name][0]?.toUpperCase() ?? "?";
   return (shared("space.letters") ?? {})[w.id] ?? ([...w.name][0]?.toUpperCase() ?? "?");
 }
-
-const narrow = () => sidebarW() < 160;
-// The rail shows names once there's room for a few letters; only near its narrowest do they go.
-const named = () => sidebarW() >= 110;
-// Once the search and toggle start sliding under the window buttons (my-chrome
-// shares where): Chrome-like, icons only, no titles. my-chrome
-// shares the rail width.
-const mini = () => sidebarW() < (shared("sidebar.slide") ?? 114);
 
 // Where a space is now: its first terminal's live folder, else where it was made.
 // `ps`: panes(), read once by the caller (each read copies every pane).
@@ -87,7 +71,8 @@ export default class Spaces extends View {
     this.busy = {}; // pane -> an agent working or a program in front of its shell
     this.ready = {}; // machine -> its layout was readable at the last look
     this.at = {}; // space -> its where() at the last look
-    this.watching = new Set(); // local repos' git folders
+    this.watching = new Map(); // local repo's git folder -> the token of the loop watching it
+    this.liveW = null; // see sidebarW()
     // Spaces made while this runs wait (at most a moment) for their git, so a
     // worktree appears under its repo instead of jumping there.
     this.shown = new Set(spaces().map((s) => s.id));
@@ -103,6 +88,28 @@ export default class Spaces extends View {
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
+  }
+
+  // The sidebar's width as drawn: measured live (the root's size, see render), since
+  // the layout's own number only changes when a drag of the edge ends. Before the
+  // first measure, the layout's.
+  sidebarW() {
+    return this.liveW ?? (find(layout(), "sidebar")?.size?.px ?? Infinity);
+  }
+
+  // How the list draws at the sidebar's width. The rail goes by width, not a flag:
+  // dragging the sidebar's edge narrows it too.
+  rail() {
+    const width = this.sidebarW();
+    return {
+      width,
+      collapsed: width < 160,
+      // The rail shows names once there's room for a few letters; only near its narrowest do they go.
+      named: width >= 110,
+      // The mini rail, once my-chrome's search and toggle start sliding under the window
+      // buttons (my-chrome shares that width): Chrome-like, icons only, no titles.
+      small: width < (shared("sidebar.slide") ?? 114),
+    };
   }
 
   checkNew(cx) {
@@ -128,7 +135,8 @@ export default class Spaces extends View {
       if (keys.has(k) || this.pending.has(k)) continue;
       delete this.git[k]; delete this.checked[k]; delete this.repoOf[k]; this.unsure.delete(k);
     }
-    const due = new Set([...keys].filter((k) => !(k in this.git)));
+    // Never asked (one being asked now has its `checked` time already).
+    const due = new Set([...keys].filter((k) => !(k in this.git) && !(k in this.checked)));
     for (const [id, k] of Object.entries(at)) if (this.at[id] && this.at[id] !== k && keys.has(k)) due.add(k);
     this.at = at;
     const spaceOf = {};
@@ -227,14 +235,17 @@ export default class Spaces extends View {
     if (this.refreshing) return;
     this.refreshing = true;
     cx.spawn(async (cx) => {
-      while (this.pending.size) {
-        const keys = [...this.pending];
-        this.pending.clear();
-        for (const key of keys) await this.check(key, cx);
+      try {
+        while (this.pending.size) {
+          const keys = [...this.pending];
+          this.pending.clear();
+          for (const key of keys) await this.check(key, cx);
+        }
+        const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
+        for (const repo of this.watching.keys()) if (!used.has(repo)) this.watching.delete(repo);
+      } finally {
+        this.refreshing = false; // else one throw would stop every later look
       }
-      const used = new Set(Object.values(this.git).filter(Boolean).map((g) => JSON.parse(g.repo)).filter(([on]) => !on).map(([, repo]) => repo));
-      for (const repo of this.watching) if (!used.has(repo)) this.watching.delete(repo);
-      this.refreshing = false;
       cx.notify();
     });
   }
@@ -245,9 +256,9 @@ export default class Spaces extends View {
     this.checked[key] = Date.now();
     this.unsure.delete(key);
     try {
-      // No optional locks: a status that touched the index would wake the watch again.
       // Writes nothing under .git (index lock, fsmonitor cookie): watch() would wake on it.
-      const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch"], { cwd, on });
+      // Only the branch headers are read, so untracked files aren't looked for.
+      const r = await exec("git", ["--no-optional-locks", "-c", "core.fsmonitor=false", "status", "--porcelain=v2", "--branch", "--untracked-files=no"], { cwd, on });
       if (r.code !== 0) {
         // Only git's own "no" is remembered as no repo; anything else is asked again.
         if (!/not a git repository/i.test(r.stderr)) this.unsure.add(key);
@@ -282,18 +293,23 @@ export default class Spaces extends View {
     }
   }
 
+  // One loop per repo: a repo dropped and watched again before the old loop's wait
+  // ends gets a new token, so the old loop stops instead of running beside the new one.
   watch(repo, cx) {
     if (this.watching.has(repo)) return;
-    this.watching.add(repo);
+    const token = {};
+    this.watching.set(repo, token);
+    const mine = () => this.watching.get(repo) === token;
     cx.spawn(async (cx) => {
       try {
-        while (this.watching.has(repo)) {
+        while (mine()) {
           await watchFolder(repo);
-          const mine = JSON.stringify([null, repo]);
+          if (!mine()) break;
+          const ours = JSON.stringify([null, repo]);
           const shown = new Set(Object.values(this.at));
-          if (this.watching.has(repo)) this.refreshGit(Object.keys(this.git).filter((k) => shown.has(k) && this.git[k]?.repo === mine), cx);
+          this.refreshGit(Object.keys(this.git).filter((k) => shown.has(k) && this.git[k]?.repo === ours), cx);
         }
-      } catch { this.watching.delete(repo); }
+      } catch { if (mine()) this.watching.delete(repo); }
     });
   }
 
@@ -348,16 +364,17 @@ export default class Spaces extends View {
   }
 
   // The rows, under a header per machine once one isn't this computer.
-  grouped(t, collapsed, sp) {
+  grouped(t, rail, sp) {
+    const { collapsed } = rail;
     const rows = this.ordered(sp);
     // Full rows carry the rail's half gap above and below too, so crossing the
     // rail's edge (where the title goes) doesn't move any row.
-    const draw = (r) => (collapsed ? this.compact(r, t) : div().py(ROW_GAP / 2).child(this.row(r, t)));
+    const draw = (r) => (collapsed ? this.compact(r, t, rail) : div().py(ROW_GAP / 2).child(this.row(r, t)));
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
-        || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
+        || sp.some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
     const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
     if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
@@ -421,12 +438,16 @@ export default class Spaces extends View {
       .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
   }
 
+  // A space's avatar: its letter on its color (render keeps every space's color in shared "space.colors").
+  avatar(w, t) {
+    const color = (shared("space.colors") ?? {})[w.id] ?? "ansi6";
+    const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
+    return h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(letter(w));
+  }
+
   row({ w, i, g, tree }, t) {
     const on = w.active;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
-    const colors = shared("space.colors") ?? {};
-    const color = colors[w.id] ?? "ansi6";
-    const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
@@ -451,7 +472,7 @@ export default class Spaces extends View {
         if (this.pressed === null) return;
         const source = spaces().find(s => s.id === this.pressed);
         const over = source && (source.machine ?? null) === (w.machine ?? null) ? w.id : null;
-        if (this.pressed !== null && this.over !== over) {
+        if (this.over !== over) {
           this.over = over;
           cx.notify();
         }
@@ -473,7 +494,7 @@ export default class Spaces extends View {
           .gap(9)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
-          .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(letter(w))))
+          .when(!tree, el => el.child(this.avatar(w, t)))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
       );
@@ -482,14 +503,10 @@ export default class Spaces extends View {
   // A rail row: same height as a full row, the avatar on the left, the name when
   // there's room. On the mini rail: just the avatar, centered. No status: the
   // agents' icons show it.
-  compact({ w, i, tree }, t) {
-    const colors = shared("space.colors") ?? {};
-    const color = colors[w.id] ?? "ansi6";
-    const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
-    const small = mini();
-    const avatar = h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child(letter(w));
+  compact({ w, tree }, t, rail) {
+    const { small } = rail;
     // On the mini rail the avatar glides to the middle and the rest fades out.
-    const dx = small ? (sidebarW() - 16 - 18) / 2 - 8 : 0;
+    const dx = small ? (rail.width - 16 - 18) / 2 - 8 : 0;
     const hover = (on, cx) => {
       if (on) this.hoverSpace = w.id;
       else if (this.hoverSpace === w.id) this.hoverSpace = null;
@@ -514,15 +531,16 @@ export default class Spaces extends View {
       .child(div().id(`space-av-${w.id}`).flex_none().relative().left(dx).transition("left", SLIDE)
         .when(small, (el) => el.child(railSquare(t, rowHeight({ tree }), w.active, this.hoverSpace === w.id)
           .id(`space-sq-${w.id}`).on_hover(hover).on_click(select)))
-        .child(avatar))
+        .child(this.avatar(w, t)))
       .child(div().id(`space-name-${w.id}`).flex_1().min_w(0).truncate().text_color(w.active ? t.foreground : t.muted)
         .opacity(small ? 0 : 1).transition("opacity", FADE)
-        .when(named(), (el) => el.child(w.name))));
+        .when(rail.named, (el) => el.child(w.name))));
   }
 
   render() {
     const t = theme();
-    const collapsed = narrow();
+    const rail = this.rail();
+    const { collapsed, small } = rail;
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
     const sp = spaces();
     const ids = new Set(sp.map(p => p.id));
@@ -544,16 +562,25 @@ export default class Spaces extends View {
       lettersChanged = true;
     }
     if (lettersChanged) setShared("space.letters", letters);
-    return track(v_flex().id("spaces-root")).size_full().min_h(0).bg(t.chrome).text_size(13)
+    return v_flex().id("spaces-root")
+      // The sidebar's width as drawn, for the rail (see sidebarW).
+      .on_size_change((size, cx) => {
+        const w = size.width / (settings().zoom || 1);
+        if (this.liveW === null || Math.abs(w - this.liveW) > 0.25) { this.liveW = w; cx.notify(); }
+      })
+      .size_full().min_h(0).bg(t.chrome).text_size(13)
       // The title stays on the rail; its + doesn't (no room to tell it apart).
-      // The mini rail folds it away (height to 0, fading), so the rows glide up.
-      .child(div().id("spaces-head").flex_none().h(mini() ? RAIL_EDGE - ROW_GAP / 2 : 31).overflow_hidden().opacity(mini() ? 0 : 1)
+      // The mini rail folds it away (down to the rail's edge, fading), so the rows glide up.
+      .child(div().id("spaces-head").flex_none().h(small ? RAIL_EDGE - ROW_GAP / 2 : 31).overflow_hidden().opacity(small ? 0 : 1)
         .transition("height", SLIDE).transition("opacity", FADE).child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
         .child("Spaces")
         .when(!collapsed, el => el.child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
           .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))))
-      .child(v_flex().flex_1().min_h(0).px(8).pb(mini() ? RAIL_EDGE - ROW_GAP / 2 : 14).overflow_y_scrollbar().mode("always")
+      .child(v_flex().id("spaces-list").flex_1().min_h(0).px(8).pb(small ? RAIL_EDGE - ROW_GAP / 2 : 14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
-        .children(this.grouped(t, collapsed, sp)));
+        // A release outside the list never reaches it: leaving mid-drag drops nothing,
+        // so the drop line doesn't follow the pointer back in with no button held.
+        .on_hover((over, cx) => { if (!over && this.pressed !== null) { this.pressed = null; this.over = null; cx.notify(); } })
+        .children(this.grouped(t, rail, sp)));
   }
 }

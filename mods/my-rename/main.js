@@ -30,19 +30,20 @@ export default class Rename extends View {
     if (this.suggesting) this.suggest(cx);
   }
 
+  // A task of this dialog: an answer that comes after it closed is dropped.
   suggest(cx) {
     const p = props();
-    exec("python3", [`${appHome()}/mods/my-rename/suggest.py`, p.terminal, p.value ?? ""], { timeout: 60000 })
-      .then((r) => {
-        let name = null;
-        try { name = r.code === 0 ? JSON.parse(r.stdout).name : null; } catch {}
-        this.suggesting = false;
-        this.noKey = r.code === 3; // suggest.py's NO_KEY
-        this.suggestion = name;
-        if (name && !this.typed) this.use(name);
-        cx.notify();
-      })
-      .catch(() => { this.suggesting = false; cx.notify(); });
+    cx.spawn(async (cx) => {
+      const r = await exec("python3", [`${appHome()}/mods/my-rename/suggest.py`, p.terminal, p.value ?? ""], { timeout: 60000 })
+        .catch(() => null);
+      let name = null;
+      try { name = r?.code === 0 ? JSON.parse(r.stdout).name : null; } catch {}
+      this.suggesting = false;
+      this.noKey = r?.code === 3; // suggest.py's NO_KEY
+      this.suggestion = name;
+      if (name && !this.typed) this.use(name);
+      cx.notify();
+    });
   }
 
   // Puts a name in the box, selected, so typing replaces it.

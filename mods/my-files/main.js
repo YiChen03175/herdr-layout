@@ -163,13 +163,15 @@ export default class Files extends View {
     return out;
   }
 
-  // .html/.htm on this computer opens in the default browser; anything else (or a remote space) previews as text.
+  // .html/.htm on this computer opens in the default browser (macOS `open`); anything else
+  // (or a remote space) previews as text, and so does a page `open` can't show.
   openOrShow(path, cx) {
     if (!/\.html?$/i.test(path) || this.on) return this.show(path, cx);
-    const full = `${this.root}/${path}`;
+    const context = this.context, full = `${this.root}/${path}`;
     cx.spawn(async cx => {
       const r = await exec("open", [full]).catch(() => null);
-      if (r?.code !== 0) { this.show(path, cx); cx.notify(); }
+      // path is relative to the folder it was clicked in: not if another one shows now.
+      if (r?.code !== 0 && this.current(context)) { this.show(path, cx); cx.notify(); }
     });
   }
 

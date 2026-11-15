@@ -1,7 +1,8 @@
 // A pane's header, for layouts that frame their panes:
 //   { "tab": "active", "pane": { "header": { "content": { "mod": "my-pane" } } } }
 // Kept quiet: the folder and the agent's status only (no program icon or name),
-// a rule under it; buttons split, zoom and close this pane. Props from the app: { pane, terminal }. Click: focus the pane.
+// a rule under it; on hover, buttons split, zoom and close this pane.
+// Props from the app: { pane, terminal }. Click: focus the pane.
 
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";

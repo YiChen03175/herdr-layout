@@ -33,10 +33,11 @@ const POLL_HIDDEN = 300000;
 const CLOSING_CHECK = 15000;
 // A row still marked closing after this long goes back to normal.
 const CLOSING_MAX = 60000;
-const isClosing = (url) => Date.now() - (closingNowSafe()[url] ?? 0) < CLOSING_MAX;
-function closingNowSafe() { return shared("my-gitlab.closing") ?? {}; }
+// The closing marks: { webUrl: since }.
+const closingMarks = () => shared("my-gitlab.closing") ?? {};
+const isClosing = (url) => Date.now() - (closingMarks()[url] ?? 0) < CLOSING_MAX;
 function setClosing(url, on) {
-  const next = { ...closingNowSafe() };
+  const next = { ...closingMarks() };
   if (on) next[url] = Date.now(); else delete next[url];
   setShared("my-gitlab.closing", next);
 }
@@ -95,9 +96,12 @@ const NO_GLAB = "找不到 glab：brew install glab，然後 glab auth login。"
 // What an error means the person has to do first: install glab, or log in.
 const needOf = (error) => !error ? null : error === NO_GLAB ? "glab"
   : /401|unauthori[sz]ed|unauthenticated|no token|not logged in|auth login/i.test(error) ? "login" : null;
-// A login or an install runs in a new tab; the panel retries meanwhile (LOGIN_WAIT at most).
+// An install runs in a new tab, a login in Accounts & keys (my-setup); the panel
+// retries meanwhile (LOGIN_WAIT at most).
 const LOGIN_WAIT = 5 * 60 * 1000;
 const inTab = (name, command) => run("tab.new", { name, argv: ["sh", "-c", `${command}; echo; echo "完成後可以關掉這個分頁。"; exec "\${SHELL:-/bin/zsh}" -l`] });
+// Accounts & keys, at its mod.json size; props.focus: the item it opens on.
+const openSetup = (setupProps) => openOverlay({ mod: "my-setup", kind: "dialog", width: 560, height: 600, props: setupProps });
 
 // Runs a GitLab GraphQL request through glab; resolves with its data, or throws
 // GitLab's or glab's message (NO_GLAB when glab can't be started at all).
@@ -233,7 +237,7 @@ export default class Gitlab extends View {
         this.refresh(cx, true);
         return;
       }
-      const lostClose = Object.values(closingNowSafe()).some((at) => now - at > CLOSING_CHECK) && now - this.triedAt > CLOSING_CHECK;
+      const lostClose = Object.values(closingMarks()).some((at) => now - at > CLOSING_CHECK) && now - this.triedAt > CLOSING_CHECK;
       if (opened && now - this.fetchedAt > STALE_ON_OPEN) this.refresh(cx);
       else if (lostClose || now - this.triedAt > (this.headless ? POLL_HIDDEN : POLL_SHOWN)) this.refresh(cx);
     });
@@ -250,7 +254,11 @@ export default class Gitlab extends View {
     cx.spawn(async (cx) => {
       try {
         const after = new Date(Date.now() - MERGED_DAYS * 86400000).toISOString();
-        const [data, refs] = await Promise.all([graphql(QUERY, { mergedAfter: after }), slackRefs()]);
+        // Slack is asked alongside GitLab, but only after it once GitLab has failed: its
+        // answer is no use without GitLab's, and a login wait retries every 5 seconds.
+        const slack = this.error ? null : slackRefs();
+        const data = await graphql(QUERY, { mergedAfter: after });
+        const refs = await (slack ?? slackRefs());
         const me = data.currentUser;
         // Slack's join To review; if they can't be looked up, GitLab's still show.
         let fromSlack = [];
@@ -268,7 +276,7 @@ export default class Gitlab extends View {
         this.org = Object.entries(orgs).sort((a, b) => b[1] - a[1])[0]?.[0] ?? this.org;
         publishNews(this.lists, visible());
         // Closed ones are gone from the list now: their marks go too (and any left too long).
-        const marks = closingNowSafe(), listed = new Set(this.lists.open.map((mr) => mr.webUrl));
+        const marks = closingMarks(), listed = new Set(this.lists.open.map((mr) => mr.webUrl));
         const kept = Object.fromEntries(Object.entries(marks).filter(([url, at]) => listed.has(url) && Date.now() - at < CLOSING_MAX));
         if (Object.keys(kept).length !== Object.keys(marks).length) setShared("my-gitlab.closing", kept);
         this.error = null;
@@ -452,17 +460,18 @@ export default class Gitlab extends View {
       .when(open, (el) => el.children(items.map((mr) => row(t, mr))));
   }
 
-  // Instead of glab's error: one button that does what's missing (in a new tab),
-  // then retries until it works.
+  // Instead of glab's error: one button that does what's missing (an install in a
+  // new tab, a login in Accounts & keys), then retries until it works.
   signIn(t, need) {
     // Logging in: Accounts & keys opens on GitLab and starts glab's web login
     // (the browser opens GitLab's Authorize page).
     const start = (cx) => {
       if (need === "glab") inTab("Install glab", "brew install glab");
-      else openOverlay({ mod: "my-setup", kind: "dialog", width: 560, height: 600, props: { focus: "gitlab", login: true } });
-      this.waitingSince = Date.now();
+      else openSetup({ focus: "gitlab", login: true });
+      const since = (this.waitingSince = Date.now());
       const retry = (cx) => {
-        if (!needOf(this.error) || Date.now() - this.waitingSince > LOGIN_WAIT) return;
+        // Stops once it works, after LOGIN_WAIT, or when a newer click has its own.
+        if (this.waitingSince !== since || !needOf(this.error) || Date.now() - since > LOGIN_WAIT) return;
         this.refresh(cx);
         cx.timer.after(5000, retry);
       };
@@ -480,7 +489,7 @@ export default class Gitlab extends View {
           .on_click((_e, cx) => start(cx)).child(need === "glab" ? "安裝 glab" : "用瀏覽器登入"))
         .when(Boolean(waiting), (el) => el.child(div().text_size(11.5).text_color(t.dim).child("登入完成後這裡會自動更新…"))))
       .child(div().id("gl-setup").text_size(11.5).text_color(t.accent).cursor_pointer().hover((s) => s.opacity(0.8))
-        .on_click(() => openOverlay({ mod: "my-setup", kind: "dialog", width: 560, height: 600, props: { focus: "gitlab" } }))
+        .on_click(() => openSetup({ focus: "gitlab" }))
         .child("所有帳號與 key"));
   }
 

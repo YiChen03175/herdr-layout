@@ -36,8 +36,8 @@ CARD_LINES = 5
 CARD_LINE = 36  # what one line of the card holds, counting a wide (CJK) character as 2
 
 
-def lines_backward(path):
-    """Yields complete lines from the end of a file, last first."""
+def lines_backward(path, limit=MAX_BACK):
+    """Yields the non-blank complete lines from the end of a file, last first, at most `limit` bytes back."""
     try:
         f = open(path, "rb")
     except OSError:
@@ -47,7 +47,7 @@ def lines_backward(path):
         pos = f.tell()
         rest = b""
         read = 0
-        while pos > 0 and read < MAX_BACK:
+        while pos > 0 and read < limit:
             n = min(CHUNK, pos)
             pos -= n
             read += n
@@ -89,9 +89,10 @@ def claude_sessions():
     out = {}
     for p in glob.glob(os.path.join(HOME, ".claude/sessions/*.json")):
         try:
-            d = json.load(open(p))
+            with open(p, encoding="utf-8") as f:
+                d = json.load(f)
             out[int(d["pid"])] = d["sessionId"]
-        except Exception:
+        except Exception:  # a file being written, or not a session's
             pass
     return out
 
@@ -184,8 +185,9 @@ def grok_sessions():
     """pid -> (session id, cwd), from Grok's list of open sessions."""
     out = {}
     try:
-        for d in json.load(open(os.path.join(HOME, ".grok/active_sessions.json"))):
-            out[int(d["pid"])] = (d["session_id"], d.get("cwd") or "")
+        with open(os.path.join(HOME, ".grok/active_sessions.json"), encoding="utf-8") as f:
+            for d in json.load(f):
+                out[int(d["pid"])] = (d["session_id"], d.get("cwd") or "")
     except Exception:
         pass
     return out
