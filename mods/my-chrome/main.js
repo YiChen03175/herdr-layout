@@ -37,7 +37,7 @@ const RAIL_ICON = 16;
 // Smoothly to the rail, or back to the width it had: the width eases over a
 // quarter second (a short burst of resizes on a click, nothing while idle).
 const SLIDE_MS = 240;
-const SETUP_EVERY = 10 * 60 * 1000; // how often the footer re-checks Accounts & keys
+const SETUP_EVERY = 10 * 60 * 1000; // how often the footer re-checks Customize's accounts and keys
 function toggleSidebar(view, cx) {
   const from = sidebarPx();
   if (!narrow()) setShared("sidebar.width", from);
@@ -93,7 +93,7 @@ export default class WorkspaceChrome extends View {
       const row = (id, icon, label, dim, action, badge = null) => h_flex().id(id).h(TOGGLE).flex_none().px(8).gap(9).items_center().rounded(8).when(collapsed, el => el.px(0).w(TOGGLE).self_center().justify_center())
         .text_color(dim ? t.dim : t.muted).hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(action).child(div().relative().flex_none()
-          .child(svg(`mods/my-chrome/${icon}.svg`).size(collapsed ? RAIL_ICON : 14))
+          .child(svg(`mods/my-chrome/${icon}${collapsed ? "-16" : ""}.svg`).size(collapsed ? RAIL_ICON : 14))
           .when(Boolean(badge), el => el.child(div().absolute().top(-2).right(-3).size(6).rounded_full().bg(badge))))
         .when(!collapsed, el => el.child(label));
       const key = paletteKey();
@@ -101,8 +101,8 @@ export default class WorkspaceChrome extends View {
         .child(row("commands", "command", "Commands", false, () => run("app.palette"))
           .when(!collapsed && Boolean(key), el => el.child(div().flex_1()).child(div().text_size(11.5).text_color(t.dim).child(key))))
         .child(row("settings", "settings", "Settings", false, () => run("app.settings"), updates().app.ready ? t.accent : null))
-        // Accounts & keys (my-setup); a dot while the GitLab login or the OpenRouter key is missing.
-        .child(row("accounts", "key-round", "Accounts & keys", false, () => run("mod.open", { name: "my-setup" }), this.missing > 0 ? t.ansi3 : null))
+        // Customize (my-setup: accounts, keys, the look); a dot while the GitLab login or the OpenRouter key is missing.
+        .child(row("accounts", "sliders", "Customize", false, () => run("mod.open", { name: "my-setup" }), this.missing > 0 ? t.ansi3 : null))
         .child(row("machine", "plus", "Add machine", true, () => run("mod.open", { name: "machine-add" })));
     }
 

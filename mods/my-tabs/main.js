@@ -27,64 +27,110 @@ function find(node, id) {
   return null;
 }
 
-// The side panel (Files / Changes) slides open and shut: its width eases over
-// SLIDE_MS with a short burst of resizes, like the sidebar's rail (layout nodes
-// have no native transition). want: "gitlab" | "files" | "changes" | null (closed).
-const SLIDE_MS = 240, PANEL_W = 368;
-// The layout has no min on the panel (the slide starts it at 0): this is its floor
-// at rest, and the narrowest width remembered.
+// The side panel (GitLab / Files / Changes) slides in and out: its width eases frame by
+// frame and the terminal's card ("main-card") takes up the rest, so the two edges move
+// together. The terminal inside the card keeps the width it had through the slide (a px
+// size; the card cuts what's past its edge) and takes its new one once the slide is over:
+// it reflows once, not every frame (which flickered). The panels' mods keep their
+// content at the full width meanwhile (shared "panel.slide"), so it slides rather than
+// squeezes.
+// want: "gitlab" | "files" | "changes" | null (closed).
+const PANEL_W = 368;
+// The narrowest the panel stays at rest, and the narrowest width remembered.
 const PANEL_MIN = 280;
-const ease = (k) => (k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2);
+const SLIDE_MS = 500;
+let slide = null; // the one under way: { want, land() }
+// What the panel shows: null when hidden, undefined when the layout has none.
 function panelNow() {
   const root = layout(), panel = find(root, "panel"), body = find(root, "panel-body");
   return panel ? (panel.hidden ? null : body?.active ?? null) : undefined;
 }
-// Where the panel is headed: a slide's end while one is under way (a closing panel
-// is still shown, but already counts as closed), else what's shown.
-const panelGoal = (view) => (view.slide ? view.slideTo : panelNow());
-function slidePanel(view, want, cx) {
+// What it's headed for: a slide under way counts as there.
+const panelGoal = () => (slide ? slide.want : panelNow());
+
+function setPanel(want, cx) {
   want = want ?? null;
-  const now = panelGoal(view);
+  const now = panelGoal();
   if (now === undefined || want === now) return;
-  // Open to open is just a switch: no slide (one under way carries on).
-  if (want && now) { run("layout.select", { stack: "panel-body", child: want }); return; }
-  const interrupted = Boolean(view.slide); // its width is part of a slide, not a choice
-  const id = (view.slide = (view.slide ?? 0) + 1);
-  view.slideTo = want;
-  const width = () => Math.max(PANEL_MIN, shared("panel.width") ?? PANEL_W);
-  const px = find(layout(), "panel")?.size?.px;
-  let from, to;
-  if (want) {
-    // From closed, or from wherever a close under way had got to.
-    from = interrupted ? px ?? 0 : 0; to = width();
-    run("layout.select", { stack: "panel-body", child: want });
-    if (!interrupted) run("layout.resize", { id: "panel", px: 0 });
-    run("layout.show", { id: "panel" });
-  } else {
-    from = px ?? width(); to = 0;
-    if (!interrupted && from >= PANEL_MIN) setShared("panel.width", from);
+  slide?.land(); // one at a time: the last one lands at once
+  if (want) run("layout.select", { stack: "panel-body", child: want });
+  if (want && now) return; // open to open: just the switch
+  const root = layout();
+  const w = want ? Math.max(PANEL_MIN, shared("panel.width") ?? PANEL_W) : find(root, "panel")?.size?.px ?? PANEL_W;
+  if (!want && w >= PANEL_MIN) setShared("panel.width", w);
+  const term = termWidth(root);
+  if (!term) { // a layout without the terminal's card: no slide
+    if (!want) return run("layout.hide", { id: "panel" });
+    run("layout.resize", { id: "panel", px: w });
+    return run("layout.show", { id: "panel" });
   }
+  const place = (px) => run("layout.resize", { id: "panel", px: Math.max(1, px) });
+  run("layout.resize", { id: "main", px: term });
+  setShared("panel.slide", { w });
+  if (want) { place(0); run("layout.show", { id: "panel" }); }
   const start = Date.now();
-  const step = (cx) => {
-    if (view.slide !== id) return; // a newer open/close took over
-    const k = Math.min(1, (Date.now() - start) / SLIDE_MS);
-    run("layout.resize", { id: "panel", px: Math.round((from + (to - from) * ease(k)) * 10) / 10 });
-    if (k < 1) cx.timer.after(16, step);
-    else {
-      if (!want) { run("layout.hide", { id: "panel" }); run("layout.resize", { id: "panel", px: width() }); }
-      view.slide = 0;
-    }
+  const me = {
+    want,
+    land() {
+      if (slide !== me) return;
+      slide = null;
+      if (!want) run("layout.hide", { id: "panel" });
+      place(w);
+      run("layout.resize", { id: "main", weight: 1 });
+      setShared("panel.slide", null);
+    },
   };
-  step(cx);
+  slide = me;
+  const frame = (cx) => {
+    if (slide !== me) return;
+    const k = Math.min(1, (Date.now() - start) / SLIDE_MS), eased = 1 - (1 - k) ** 3;
+    if (k >= 1) return me.land();
+    place(w * (want ? eased : 1 - eased));
+    cx.timer.after(16, frame);
+  };
+  cx.timer.after(16, frame);
 }
 
+// The terminal's width now, in the layout's px; null without the terminal's card.
+function termWidth(root) {
+  if (!find(root, "main-card")) return null;
+  const v = globalThis.window.viewport_size(), z = Number(settings()?.zoom) || 1;
+  const r = placeOf(root, "main", { x: 0, y: 0, w: v.width, h: v.height }, z);
+  return r ? r.w / z : null;
+}
+// Where node `id` sits in the window, in window px (the layout's px are zoomed): rows and
+// columns as Herdr lays them out, padding first, then the shown children with gap and
+// divider between, px sizes first and weights sharing the rest.
+function placeOf(node, id, r, z) {
+  if (node.id === id) return r;
+  const kids = (node.children ?? []).filter((c) => !c.hidden);
+  if (!kids.length) return null;
+  const p = node.padding ?? 0, [pv, ph] = (Array.isArray(p) ? p : [p, p]).map((v) => v * z);
+  const box = { x: r.x + ph, y: r.y + pv, w: r.w - 2 * ph, h: r.h - 2 * pv };
+  if (node.type !== "row" && node.type !== "column") {
+    for (const c of kids) { const hit = placeOf(c, id, box, z); if (hit) return hit; }
+    return null;
+  }
+  const row = node.type === "row", step = ((node.gap ?? 0) + (node.divider?.width ?? 0)) * z;
+  const fixed = kids.reduce((n, c) => n + (c.size?.px ?? 0) * z, 0);
+  const weights = kids.reduce((n, c) => n + (c.size?.px == null ? c.size?.weight ?? 1 : 0), 0);
+  const free = Math.max(0, (row ? box.w : box.h) - fixed - step * (kids.length - 1));
+  let at = row ? box.x : box.y;
+  for (const c of kids) {
+    const len = c.size?.px != null ? c.size.px * z : (free * (c.size?.weight ?? 1)) / weights;
+    const hit = placeOf(c, id, row ? { x: at, y: box.y, w: len, h: box.h } : { x: box.x, y: at, w: box.w, h: len }, z);
+    if (hit) return hit;
+    at += len + step;
+  }
+  return null;
+}
 // #rrggbb plus an alpha byte; other forms pass through.
 const alpha = (color, a) => /^#[0-9a-f]{6}$/i.test(color ?? "") ? color + a : color;
 // A localStorage value, or `fallback` when it's missing or unreadable.
 function stored(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; }
 }
-// blocked or unread (done): the icon hops in place, asking for you (native loop, no timer).
+// blocked: the icon hops in place, asking for you (native loop, no timer), as in the sidebar.
 const BOUNCE = { from: 0, to: -3.5, period: 700, easing: "ease-in-out" };
 
 // A terminal title without the status glyph or spinner frame a program puts ahead of it.
@@ -116,27 +162,66 @@ const PANEL_LABELS_MIN = 760;
 const TITLE_MAX = { wide: 170, narrow: 100 };
 // A tab around its title: padding, border, icon and the gap after it (layout px).
 const TAB_CHROME = 43;
+// The window's top edge crowds what's under it: the tabs sit this much lower in the
+// bar (layout px), so the gaps above and below them look the same.
+const BAR_TOP = 2;
 // How long the pointer rests on + N before its menu opens.
 const MORE_OPEN_MS = 120;
 // A little air left after the +N, before Files and Changes (layout px).
 const TAIL_ROOM = 16;
 // The shortest title worth squeezing a tab in for, before the +N.
 const SQUEEZE_MIN = 40;
-// Tab order by urgency: higher goes left. idle, working and no agent are equal.
-const RANK = { blocked: 3, done: 2 };
-// A tab that turned done moves only if it stays done this long (ms): my-agents may
-// be about to say the agent is just waiting on its shells.
-const DONE_SETTLE = 600;
+// A tab's icon, as its agent's in the sidebar (my-agents): Claude Code is Clawd acting
+// out the status (my-agents' GIFs); other icons pulse while working and hop when blocked.
+const CLAWD = new Set(["working", "blocked", "done"]);
+function tabIcon(c, program, color) {
+  if (!program?.icon) return null;
+  if (program.key === "claude" && CLAWD.has(c.status)) {
+    // In a box the icon's size: Clawd is drawn bigger, over its edges, and the
+    // GIF's own size never reaches the tab's layout (it squeezed the title).
+    return div().relative().size(14).flex_none()
+      .child(image(`mods/my-agents/clawd-${c.status}.gif`).absolute().top(-2).left(-2).size(18));
+  }
+  return (program.tint ? svg(program.icon).size(14).text_color(color) : image(program.icon).size(14))
+    .when(c.status === "working", el => el.loop("opacity", PULSE))
+    .when(c.status === "blocked", el => el.relative().loop("top", BOUNCE));
+}
 // Read: an agent tab you've seen since it finished (idle, not the shown tab) is a
 // little faded; one that finished unseen (done) stays at full strength.
 const READ = { dim: "a6", icon: 0.6 };
 // The shown tab's border: its title color, a little softer (alpha bytes).
 const ACTIVE_BORDER = "bf";
 
+// Frosted glass (Customize): a selection is pressed into the glass, as iOS's segmented
+// controls draw it: a darker, still see-through well with a narrow shadow inside all
+// its edges. gpui has no inset shadow, so it's four faint rings 0.4 px apart: the edge
+// is under all four, each step in under one fewer, so it fades out over 1.6 px. On the
+// see-through window their opacities add up (gpui sums alpha there): each ring is
+// barely there, the edge about 3% darker than the well.
+// Hover is a faint lift. Off, rows look as before.
+let glassAt = 0, glassNow = false;
+const glassy = () => {
+  if (Date.now() - glassAt > 300) { glassAt = Date.now(); glassNow = Boolean(layout()?.window_blur); }
+  return glassNow;
+};
+const darkUi = (t) => parseInt(t.foreground.slice(1, 3), 16) > 128;
+const GLASS_PICK = {
+  dark: { fill: "#0000001f", ring: "#00000002", hover: "#ffffff33" },
+  light: { fill: "#00000014", ring: "#00000002", hover: "#0000001f" },
+};
+const GLASS_RINGS = [0.4, 0.8, 1.2, 1.6];
+const glassPick = (t) => GLASS_PICK[darkUi(t) ? "dark" : "light"];
+// el: the selected box (positioned: relative or absolute); r: its corner radius; b: its
+// own border's width (the rings go over it, so the shadow starts at the very edge).
+const glassSelected = (el, t, r, b = 0) => {
+  const p = glassPick(t);
+  const edge = (w, c) => div().absolute().top(-b).left(-b).right(-b).bottom(-b).rounded(r).border(w).border_color(c);
+  return el.bg(p.fill).children(GLASS_RINGS.map((w) => edge(w, p.ring)));
+};
+const glassHover = (s, t) => s.bg(glassPick(t).hover);
+
 export default class Tabs extends View {
   init(_props, cx) {
-    this.ranks = {};      // tab id -> its last rank, to see what just got more urgent
-    this.doneSince = {};  // tab id -> when it turned done, until it has settled
     this.flip = null;     // { ids, offsets, applied, until }: a reorder sliding into place
     this.flipAt = 0;      // when the last reorder slid, for its longer transition
     this.looking = false; // a redraw is already asked for (lookAgain)
@@ -154,29 +239,32 @@ export default class Tabs extends View {
     this.widths = {};     // tab id -> width, window px
     this.numbers = stored("numbers", {}); // unnamed tab id -> its number
     this.panels = stored("tabPanels", {}); // tab id -> "gitlab" | "files" | "changes" | null
-    this.slide = 0; this.slideTo = null; this.panelPending = null; // see slidePanel
+    this.panelPending = null; // see syncPanel
     // `herdr-app do my-tabs.<gitlab|files|changes>` toggles that panel, `my-tabs.close` shuts it.
     cx.spawn(async (cx) => {
       for (;;) {
         const c = await nextCommand();
-        if (c === "close") slidePanel(this, null, cx);
-        else if (["gitlab", "files", "changes"].includes(c)) slidePanel(this, panelGoal(this) === c ? null : c, cx);
+        if (c === "close") setPanel(null, cx);
+        else if (["gitlab", "files", "changes"].includes(c)) setPanel(panelGoal() === c ? null : c, cx);
       }
     });
   }
 
   // The side panel is remembered per tab (each tab is one session): switching tabs
-  // slides to that tab's choice (closed if it never had one), and opening or closing
+  // switches to that tab's choice (closed if it never had one), and opening or closing
   // it records it. Width is shared by all tabs.
   syncPanel(space, panel, body, enabled, cx) {
     const tab = space?.tabs?.find(c => c.active);
     if (!tab || !panel) return;
     const now = panel.hidden ? null : body?.active ?? null;
-    if (this.slide) return; // mid-slide sizes aren't choices
     // At rest, dragged narrower than PANEL_MIN: back to it; else it's the width to keep.
+    // Not while it slides: its width is the slide's then.
     const px = panel.size?.px ?? 0;
-    if (!panel.hidden && px < PANEL_MIN) run("layout.resize", { id: "panel", px: PANEL_MIN });
-    else if (!panel.hidden && px !== shared("panel.width")) setShared("panel.width", px);
+    if (!slide) {
+      if (find(layout(), "main")?.size?.px) run("layout.resize", { id: "main", weight: 1 }); // a slide cut short (a reload)
+      else if (!panel.hidden && px < PANEL_MIN) run("layout.resize", { id: "panel", px: PANEL_MIN });
+      else if (!panel.hidden && px !== shared("panel.width")) setShared("panel.width", px);
+    }
     if (tab.id !== this.tab) {
       const first = this.tab === undefined;
       this.tab = tab.id; this.panelPending = null;
@@ -184,7 +272,7 @@ export default class Tabs extends View {
         const stored = this.panels[tab.id] ?? null, want = enabled.includes(stored) ? stored : null;
         if (want !== now) {
           this.panelPending = { want, until: Date.now() + 1000 };
-          slidePanel(this, want, cx);
+          setPanel(want, cx);
           return;
         }
       }
@@ -206,8 +294,8 @@ export default class Tabs extends View {
     const live = new Set(sp.flatMap(p => p.tabs.map(c => c.id)));
     let changed = false;
     if (live.size) for (const id of Object.keys(this.numbers)) if (!live.has(id)) { delete this.numbers[id]; changed = true; }
-    // Closed tabs' measures, ranks and panels go too.
-    if (live.size) for (const m of [this.ranks, this.widths, this.doneSince]) for (const id of Object.keys(m)) if (!live.has(id)) delete m[id];
+    // Closed tabs' measures and panels go too.
+    if (live.size) for (const m of [this.widths]) for (const id of Object.keys(m)) if (!live.has(id)) delete m[id];
     if (live.size && Object.keys(this.panels).some(id => !live.has(id))) {
       for (const id of Object.keys(this.panels)) if (!live.has(id)) delete this.panels[id];
       localStorage.setItem("tabPanels", JSON.stringify(this.panels));
@@ -281,56 +369,43 @@ export default class Tabs extends View {
     return off;
   }
 
-  // Order: blocked > unread (done) > idle = working. A tab that just got more
-  // urgent moves left, to just after the nearest tab on its left that's at least
-  // as urgent; one that got calmer stays put (looking at a tab doesn't shuffle
-  // the others). The shown space's move slides: each tab starts drawn where it
-  // was and eases to its new place.
-  // Runs on every render (a status change redraws, no need to poll); a done tab
-  // still settling asks for one more look once it has.
+  // Tabs follow the sidebar: my-agents shares the order its rows show the tabs in
+  // ("agents.tabOrder"); a tab it doesn't list keeps its place after those it does.
+  // One move at a time; in the shown space, each tab starts drawn where it was and
+  // eases to its new place. Runs on every render (a new order redraws every mod).
   reorder(sp, cx) {
     if (this.drag?.active || this.pending || this.flip) return;
-    const rank = (c) => RANK[c.status] ?? 1;
-    // Nothing moved or changed state since the last full look (and nothing settling): done.
-    const sig = sp.map(w => w.tabs.map(c => `${c.id}:${c.status}`).join()).join("|");
-    if (sig === this.rankSig && !Object.keys(this.doneSince).length) return;
-    let settling = Infinity; // ms until the next done tab has settled
+    const order = shared("agents.tabOrder");
+    if (!Array.isArray(order)) return;
+    const sig = JSON.stringify(order) + sp.map(w => w.tabs.map(c => c.id).join()).join("|");
+    if (sig === this.orderSig) return;
+    const at = new Map(order.map((id, i) => [id, i]));
     for (const space of sp) {
       const ids = space.tabs.map(c => c.id);
-      for (const [i, c] of space.tabs.entries()) {
-        const was = this.ranks[c.id], now = rank(c);
-        if (now === RANK.done && was !== undefined && was < now) {
-          const left = (this.doneSince[c.id] ??= Date.now()) + DONE_SETTLE - Date.now();
-          if (left > 0) { settling = Math.min(settling, left); continue; }
-        }
-        delete this.doneSince[c.id];
-        this.ranks[c.id] = now;
-        if (was === undefined || now <= was) continue;
-        let j = i;
-        while (j > 0 && rank(space.tabs[j - 1]) < now) j--;
-        if (j === i) continue;
-        if (space.active) {
-          const before = this.geometry(ids.map(id => ({ id })));
-          const order = [...ids]; order.splice(j, 0, ...order.splice(i, 1));
-          const after = this.geometry(order.map(id => ({ id })));
-          const offsets = {};
-          order.forEach((id, k) => { offsets[id] = (before.L[ids.indexOf(id)] - after.L[k]) / after.z; });
-          this.flip = { ids: order, offsets, applied: false, until: Date.now() + 1000 };
-          const settle = (cx) => {
-            if (!this.flip) return;
-            if (this.flip.applied || Date.now() > this.flip.until) { this.flip = null; this.flipAt = Date.now(); cx.notify(); }
-            else cx.timer.after(16, settle);
-          };
-          cx.timer.after(16, settle);
-        }
-        run("tab.move", { id: c.id, index: j + 1 });
-        // One move at a time: the next look (the new order redraws; else this) sees it.
-        this.lookAgain(200, cx);
-        return;
+      const want = ids.map((id, i) => ({ id, k: at.get(id) ?? order.length + i })).sort((a, b) => a.k - b.k).map(x => x.id);
+      const j = want.findIndex((id, k) => id !== ids[k]);
+      if (j < 0) continue;
+      const id = want[j], i = ids.indexOf(id);
+      if (space.active) {
+        const before = this.geometry(ids.map(id => ({ id })));
+        const next = [...ids]; next.splice(j, 0, ...next.splice(i, 1));
+        const after = this.geometry(next.map(id => ({ id })));
+        const offsets = {};
+        next.forEach((id, k) => { offsets[id] = (before.L[ids.indexOf(id)] - after.L[k]) / after.z; });
+        this.flip = { ids: next, offsets, applied: false, until: Date.now() + 1000 };
+        const settle = (cx) => {
+          if (!this.flip) return;
+          if (this.flip.applied || Date.now() > this.flip.until) { this.flip = null; this.flipAt = Date.now(); cx.notify(); }
+          else cx.timer.after(16, settle);
+        };
+        cx.timer.after(16, settle);
       }
+      run("tab.move", { id, index: j + 1 });
+      // One move at a time: the next look (the new order redraws; else this) sees it.
+      this.lookAgain(200, cx);
+      return;
     }
-    this.rankSig = sig;
-    if (settling < Infinity) this.lookAgain(settling, cx);
+    this.orderSig = sig;
   }
 
   // Draw (and so reorder) again in `ms`; once, however often it's asked meanwhile.
@@ -397,13 +472,11 @@ export default class Tabs extends View {
       .child(`+ ${more.length}`);
     const row = (c) => {
       const program = programOf(c);
-      const loud = c.status === "blocked" || c.status === "done";
       return h_flex().id(`more-${c.id}`).h(30).px(8).gap(8).items_center().rounded(6).cursor_pointer()
         .text_size(12.8).text_color(c.status === "idle" ? t.muted : t.foreground)
         .hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("tab.select", { id: c.id }))
-        .when(Boolean(program?.icon), el => el.child((program.tint ? svg(program.icon).size(14) : image(program.icon).size(14))
-          .when(loud, el => el.relative().loop("top", BOUNCE))))
+        .when(Boolean(program?.icon), el => el.child(tabIcon(c, program, t.foreground)))
         .child(div().flex_1().min_w(0).truncate().child(nameOf(c, program)));
     };
     return HoverCard.new("tab-more-menu").anchor("top_right").open_delay(MORE_OPEN_MS).close_delay(250)
@@ -459,12 +532,16 @@ export default class Tabs extends View {
       const name = nameOf(c, program);
       // working looks calm too: no fill, the pulse says it's busy.
       const calm = c.status !== "blocked";
-      const working = c.status === "working";
       const read = c.status === "idle" && !c.active;
       return h_flex().id(`tab-${c.id}-${this.gen}`).h(29).px(10).gap(7).rounded(7).items_center().flex_none().text_size(12.8)
         .border(1).text_color(c.active ? t.foreground : t.muted)
         // idle / done / working (or no agent): outline only, filled on hover.
         .when(calm, el => el.border_color(c.active ? activeBorder : t.border).when(still, el => el.hover(s => s.bg(c.active ? t.raised : t.hover))))
+        // Under frosted glass tabs sit on the bar as segments of an iOS control: the shown
+        // one a tone lighter, the rest without an outline (a blocked one keeps its red).
+        .when(calm && glassy(), el => el
+          .when(c.active, el => glassSelected(el.relative().border_color("#00000000"), t, 7, 1))
+          .when(!c.active, el => el.border_color("#00000000").when(still, el => el.hover(s => glassHover(s, t)))))
         // blocked: as before, but a translucent red border.
         .when(!calm, el => el.border_color(c.active ? activeBorder : alpha(t.blocked, "66"))
           .bg(c.active ? t.raised : t.chrome).when(still, el => el.hover(s => s.bg(t.hover))))
@@ -496,10 +573,8 @@ export default class Tabs extends View {
         .on_mouse_down("right", (_e, cx) => { cx.stop_propagation(); openOverlay({ mod: "my-menu", kind: "popup", width: 200,
           // The name shown here and the terminal to suggest from, for Rename and Close.
           props: { tab: "tab", target: { id: c.id, space: space.id, name, terminal: termOf(c) } } }); })
-        .when(Boolean(program?.icon), el => el.child((program.tint ? svg(program.icon).size(14).text_color(c.active ? t.foreground : t.muted) : image(program.icon).size(14))
-          .when(working, el => el.loop("opacity", PULSE))
-          .when(!working && read, el => el.opacity(READ.icon))
-          .when(c.status === "blocked" || c.status === "done", el => el.relative().loop("top", BOUNCE))))
+        .when(Boolean(program?.icon), el => el.child(tabIcon(c, program, c.active ? t.foreground : t.muted)
+          .when(read, el => el.opacity(READ.icon))))
         .child(this.title(c, c.zoomed ? `${name} Z` : name, read, t));
     };
     const root = layout(), w = window();
@@ -527,19 +602,21 @@ export default class Tabs extends View {
       const slotW = lit ? 14 + 5 * (count.length - 1) : 14;
       const fade = (key, shown) => div().id(`panel-${id}-${key}`).opacity(shown ? 1 : 0).transition("opacity", NEWS);
       return h_flex().id(`panel-${id}`).cursor_pointer().h(26).px(iconOnly ? 6 : 8).gap(5).flex_none().items_center().rounded(6)
-        .text_size(12).bg(on ? t.selected : t.chrome).text_color(on ? t.foreground : t.muted)
+        .text_size(12).bg(on ? t.selected : t.chrome).when(glassy(), el => el.hover(s => glassHover(s, t))).when(on && glassy(), el => glassSelected(el.relative(), t, 6)).text_color(on ? t.foreground : t.muted)
         .hover(s => s.bg(t.hover)).on_mouse_down("left", stop)
-        .on_click((_e, cx) => slidePanel(this, on ? null : id, cx))
+        .on_click((_e, cx) => setPanel(on ? null : id, cx))
         .child(div().id(`panel-${id}-slot`).relative().h(14).flex_none().w(slotW).transition("width", NEWS)
           .child(fade("icon", !lit).absolute().left(0).top(lit ? -5 : 0).transition("top", NEWS).child(svg(icon).size(14)))
           .when(n > 0, el => el.child(fade("count", lit).absolute().left(0).w_full().h(14).top(lit ? 0 : 5).transition("top", NEWS)
             .flex().items_center().justify_center().rounded_full().bg(t.accent)
-            .text_color(t.background).text_size(9.5).font_bold().child(count))))
+            .text_color(t.background.slice(0, 7)).text_size(9.5).font_bold().child(count)))) // solid under frosted glass
         .when(!iconOnly, el => el.child(div().relative().child(label)
           .child(fade("label", lit).absolute().top(0).left(0).text_color(t.foreground).child(label))))
         .when(iconOnly, el => el.tooltip(lit ? `${label} · ${n} new` : label));
     };
-    return h_flex().size_full().min_w(0).px(10).pl(lightsPadding).gap(3).items_center().bg(t.chrome).border_b(1).border_color(t.border)
+    return h_flex().size_full().min_w(0).px(10).pt(BAR_TOP).pl(lightsPadding).gap(3).items_center().bg(t.chrome)
+      // Under frosted glass (Customize) the work card's edge parts it from the bar: no line.
+      .when(!layout()?.window_blur, el => el.border_b(1).border_color(t.border))
       .id("tabs-root")
       // The bar's width, in layout px, for the panel buttons' labels.
       .on_size_change((size, cx) => {
@@ -560,7 +637,7 @@ export default class Tabs extends View {
       // GitLab first, then Herdr's own panels.
       .child(panelButton("gitlab", "GitLab", "mods/my-gitlab/gitlab.svg", shared("my-gitlab.new") ?? 0))
       .when(enabled.includes("files"), el => el.child(panelButton("files", "Files", "mods/files/file.svg")))
-      .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/changes/changes.svg")))
+      .when(enabled.includes("changes"), el => el.child(panelButton("changes", "Changes", "mods/my-tabs/changes.svg")))
       .when(w?.buttons, el => el.child(button("minimize", w.platform === "windows" ? svg("mods/my-tabs/win-min.svg").size(16) : "−", () => run("window.minimize")))
         .child(button("maximize", w.platform === "windows" ? svg(`mods/my-tabs/${w.maximized ? "win-restore" : "win-max"}.svg`).size(16) : "□", () => run("window.maximize")))
         .child(button("close-window", w.platform === "windows" ? svg("mods/my-tabs/win-close.svg").size(16) : svg("mods/pane/close.svg").size(13), () => run("window.close"))));

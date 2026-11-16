@@ -71,12 +71,51 @@ const selectedBg = (t) => {
   return v;
 };
 
+// Frosted glass (Customize): a selection is pressed into the glass, as iOS's segmented
+// controls draw it: a darker, still see-through well with a narrow shadow inside all
+// its edges. gpui has no inset shadow, so it's four faint rings 0.4 px apart: the edge
+// is under all four, each step in under one fewer, so it fades out over 1.6 px. On the
+// see-through window their opacities add up (gpui sums alpha there): each ring is
+// barely there, the edge about 3% darker than the well.
+// Hover is a faint lift. Off, rows look as before.
+let glassAt = 0, glassNow = false;
+const glassy = () => {
+  if (Date.now() - glassAt > 300) { glassAt = Date.now(); glassNow = Boolean(layout()?.window_blur); }
+  return glassNow;
+};
+const darkUi = (t) => parseInt(t.foreground.slice(1, 3), 16) > 128;
+// card: the hover card, solid (macOS blurs only the desktop behind the window, so a
+// see-through card would show the sidebar's text sharp behind it) in the glass's own
+// grey, a step lighter than the work card; tag: its Recap / Last reply pill.
+// Its edge as macOS draws a menu's: a dark hairline outside (edge) parting it from the
+// glass, a faint light one just inside (sheen) as the glass's rim.
+const GLASS_PICK = {
+  dark: { fill: "#0000001f", ring: "#00000002", hover: "#ffffff33", card: "#2a2c32", tag: "#ffffff17", edge: "#00000099", sheen: "#ffffff1a" },
+  light: { fill: "#00000014", ring: "#00000002", hover: "#0000001f", card: "#f6f6f8", tag: "#0000000f", edge: "#00000029", sheen: "#ffffffcc" },
+};
+const cardBg = (t) => (glassy() ? glassPick(t).card : t.popover);
+const cardEdge = (t) => (glassy() ? glassPick(t).edge : t.border);
+// The light hairline inside the card's border (r: the card's radius).
+const cardSheen = (el, t, r) => (glassy()
+  ? el.relative().child(div().absolute().inset_0().rounded(r - 1).border(1).border_color(glassPick(t).sheen))
+  : el);
+const GLASS_RINGS = [0.4, 0.8, 1.2, 1.6];
+const glassPick = (t) => GLASS_PICK[darkUi(t) ? "dark" : "light"];
+// el: the selected box (positioned: relative or absolute); r: its corner radius; b: its
+// own border's width (the rings go over it, so the shadow starts at the very edge).
+const glassSelected = (el, t, r, b = 0) => {
+  const p = glassPick(t);
+  const edge = (w, c) => div().absolute().top(-b).left(-b).right(-b).bottom(-b).rounded(r).border(w).border_color(c);
+  return el.bg(p.fill).children(GLASS_RINGS.map((w) => edge(w, p.ring)));
+};
+const glassHover = (s, t) => s.bg(glassPick(t).hover);
+
 // On the mini rail: a square as tall as the row, centered on its 18 px icon,
 // in the row's selected or hover color (nothing otherwise).
 const railSquare = (t, rowH, selected, hovered) => {
   const inset = (rowH - 18) / 2;
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
-    .when(selected || hovered, (el) => el.bg(selected ? selectedBg(t) : t.hover));
+    .when(selected || hovered, (el) => (glassy() ? (selected ? glassSelected(el, t, 8) : glassHover(el, t)) : el.bg(selected ? selectedBg(t) : t.hover)));
 };
 // How often agents' states are compared (in-process, cheap): the corner note
 // Herdr puts up shows until the next look closes it, so look often.
@@ -607,7 +646,7 @@ export default class Agents extends View {
         .size(size).flex().items_center().justify_center()
         .when(small, (el) => el.child(railSquare(t, 30, false, Boolean(this.hoverNew))
           .id("ag-new-sq").on_hover(hover).on_mouse_down("left", press).on_click(open)))
-        .child(svg("mods/workspace-chrome/plus.svg").size(collapsed ? 16 : 15)))
+        .child(svg("mods/my-agents/plus.svg").size(15)))
       .child(div().id("ag-new-label").flex_1().min_w(0).truncate()
         .opacity(small ? 0 : 1).transition("opacity", FADE)
         .when(!collapsed || named(), (el) => el.child("New tab"))));
@@ -660,16 +699,16 @@ export default class Agents extends View {
     // not padding on the card: the card's layer takes clicks, and padding would sit
     // invisibly over the rail's square and swallow clicks on its edge.
     return rowEl.relative().child(Popup.new(`recap-${a.address}`, div().w(1).h(1)).absolute().top(-POP_LIFT).right(-(8 + POP_GAP)).w(1).h(1).anchor("top_left")
-      .when(open && !r, (el) => el.content(div().child(v_flex().max_w(RECAP_W).px(10).py(7).gap(2).rounded(8).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+      .when(open && !r, (el) => el.content(div().child(v_flex().max_w(RECAP_W).px(10).py(7).gap(2).rounded(8).bg(cardBg(t)).border(1).border_color(cardEdge(t)).shadow_lg().when(glassy(), (el) => cardSheen(el, t, 8))
         .child(div().text_size(12.5).text_color(t.foreground).whitespace_normal().child(name ?? ""))
         .when(Boolean(where), (el) => el.child(sub())))))
-      .when(open && Boolean(r), (el) => el.content(div().child(v_flex().w(RECAP_W).p(12).gap(6).rounded(10).bg(t.popover).border(1).border_color(t.border).shadow_lg()
+      .when(open && Boolean(r), (el) => el.content(div().child(v_flex().w(RECAP_W).p(12).gap(6).rounded(10).bg(cardBg(t)).border(1).border_color(cardEdge(t)).shadow_lg().when(glassy(), (el) => cardSheen(el, t, 10))
         .when(Boolean(name) || Boolean(where), (el) => el.child(v_flex().w_full().gap(2)
           .when(Boolean(name), (el) => el.child(head()))
           .when(Boolean(where), (el) => el.child(sub()))))
         // A small pill naming the text, then the text under it. Last reply: at most
         // five lines, should recap.py's guess of the width be short.
-        .child(h_flex().child(h_flex().flex_none().h(14).px(5).gap(3).items_center().rounded_full().bg(t.hover)
+        .child(h_flex().child(h_flex().flex_none().h(14).px(5).gap(3).items_center().rounded_full().bg(glassy() ? glassPick(t).tag : t.hover)
           .text_size(9.5).font_semibold().text_color(t.muted)
           // One icon for every recap, whichever agent wrote it.
           .child(svg(`mods/my-agents/${recap ? "recap" : "reply"}.svg`).size(9).flex_none().text_color(t.muted))
@@ -989,7 +1028,7 @@ export default class Agents extends View {
           this.toggleFold(a.address);
           cx.notify();
         })
-        .child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
+        .child(svg(`mods/my-agents/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none())
         .when(!open, (el) => el.child(String(subs.length)));
     };
 
@@ -1044,7 +1083,9 @@ export default class Agents extends View {
           .gap(6)
           // On the mini rail the row is wider than tall: its look goes on a square
           // around the icon instead, which glides with it.
-          .when(!small, (el) => el.overflow_hidden().when(a.focused, (el) => el.bg(selectedBg(t))).hover((s) => s.bg(t.hover))
+          .when(!small, (el) => el.overflow_hidden()
+            .when(a.focused, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(selectedBg(t))))
+            .hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover)))
             .on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx)))
           // On the mini rail only the square you can see is clickable (below).
           .when(!small, (el) => el.on_click(focus))
@@ -1083,7 +1124,7 @@ export default class Agents extends View {
           // leave it here, card and all.
           this.hoverRecap(a, false, cx);
         })
-        .child(svg(`mods/workspace-chrome/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
+        .child(svg(`mods/my-agents/${isPinned ? "pin-off" : "pin"}.svg`).size(13));
       return this.withRecap(t, a, h_flex()
         .id(`ag-${a.address}`)
         .on_mouse_down("right", this.rowMenu(a, archivedSet.has(a.address)))
@@ -1093,8 +1134,8 @@ export default class Agents extends View {
         .rounded(8)
         .items_center()
         .gap(9)
-        .when(a.focused, (el) => el.bg(selectedBg(t)))
-        .hover((s) => s.bg(t.hover))
+        .when(a.focused, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(selectedBg(t))))
+        .hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover)))
         .on_hover((on, cx) => this.hoverRecap(a, on, cx))
         .on_mouse_move((e, cx) => this.trackHover(a, e, cx))
         .on_click(focus)
@@ -1153,7 +1194,7 @@ export default class Agents extends View {
         .when(!collapsed && (byPriority || !open), (el) => el.child(div().text_color(t.dim).child(String(g.members.length))))
         .child(div().flex_1())
         .when(!open, (el) => el
-          .child(svg("mods/workspace-chrome/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
+          .child(svg("mods/my-agents/chevron-right.svg").size(11).flex_none().text_color(t.dim)));
     };
     // On the rail a title folds away (height to 0, fading) for the mini rail
     // rather than vanishing, so the rows below glide up.
@@ -1197,6 +1238,11 @@ export default class Agents extends View {
 
     const archive = { id: "archived", label: "Standby", status: null, members: old };
     const byAge = [...old].sort((x, y) => this.since(x) - this.since(y));
+    // The tabs in the order their first row shows here (pinned, the list, Standby):
+    // the tab bar (my-tabs) follows it. Shared only when it changes (that redraws every mod).
+    const tabOrder = [...new Set([...pinned, ...live.filter((a) => !a.pinned), ...byAge].map((a) => a.tab))];
+    const orderRaw = JSON.stringify(tabOrder);
+    if (orderRaw !== JSON.stringify(shared("agents.tabOrder") ?? null)) setShared("agents.tabOrder", tabOrder);
     const older = byAge.slice(0, Math.max(0, byAge.length - ARCHIVE_SHOWN)), newest = byAge.slice(older.length);
     const olderOpen = this.archiveMore && older.length > 0;
     // Older ones slide open and shut (the section, sitting on the bottom, grows

@@ -9,10 +9,12 @@
 **上方分頁列（`my-tabs`）**
 - macOS 的視窗按鈕放在分頁列上，不壓在側邊欄上面。
 - 分頁標題用 agent 自己取的名字，例如 Claude Code 的 session 名稱。
-- 分頁照緊急程度排序：需要你的排最左邊。
+- 分頁的順序跟左側 Agents 列表一樣（釘選的、列表、Standby），左側一變，分頁就一格一格滑到新位置。
 - 重新命名分頁（右鍵 Rename 或雙擊分頁）時，會請 Claude Haiku 依那個分頁的 agent 最近在做的事建議一個名字，約 3～4 秒後自動填進輸入框（你還沒打字的話）；不想用可以點「Keep "原本的名字"」。按 Save 後名字就固定，不會再跟著 terminal 標題變。
 - 所有 Close 都會先跳確認視窗：分頁右鍵、terminal 右鍵、space 右鍵（都走 `my-menu`，複製自 Herdr 的 `menu`；layout 的 `terminal_menu` 指向它）、pane 標題列的 ×、側邊欄 agent 右鍵。確認視窗是 `my-confirm`（複製自 `confirm`），關閉類的 Confirm 按鈕是紅色的。
-- 工作中的分頁，圖示會跟側邊欄一樣慢慢閃爍（2 秒一次）；做完但還沒看的分頁保持全亮，看過的會稍微變淡。
+- 分頁列固定 42px 高，不能上下拖。
+- 所有線條圖示畫出來的線粗一致（1.17px，Lucide 線寬 2 在 14px 的粗細）：小於或大於 14px 的圖示用加粗或變細的副本（例如 `my-gitlab/sm/`、`my-chrome/*-16.svg`）。
+- 分頁的圖示跟側邊欄一樣：Claude Code 是 Clawd 的小動畫，其他程式工作中慢慢閃（2 秒一次）、需要你時會跳；看過的閒置分頁圖示稍微變淡。
 - 寬度不夠時，GitLab / Files / Changes 只顯示圖示，多出來的分頁收進「+N」。
 - GitLab / Files / Changes 面板**每個分頁（session）各自記住**開或關；切換分頁時面板會用約 0.24 秒的動畫滑開或收合。寬度所有分頁共用，最窄 280px。也可以用 `herdr-app do my-tabs.gitlab`／`.files`／`.changes`／`.close` 開關面板。
 
@@ -39,12 +41,13 @@
   - Claude Code 停下來但還有 shell 開著時，由 decision model 判斷：還在等 shell 就繼續顯示 working，在等你回答就等同 blocked，做完或判斷不出來就維持原本的狀態。側邊欄、上方 tab、space、pane header 和狀態列都看同一份結果。
   - 釘選的 session 隔成最上面一塊（底下一條分隔線，中間有一個斜放的實心小圖釘，線和圖釘同色）；「+ New tab」在一般列表的最後、Standby 之上；釘選或取消時，它會從原本的位置收起、在上面那塊展開（約 0.2 秒）。
 - **Agent 完成或需要你時改成 macOS 系統通知**，並收掉 Herdr 視窗內右下角的提示。通知三行依序是狀態（Ready／Needs you）、agent 所在的 repo（不在 repo 裡就是資料夾名稱）、session 名稱，旁邊附上 agent 的圖示（Claude Code、Grok…）。點通知會切回 Herdr 並跳到那個 agent（需要 `terminal-notifier`；沒裝的話改用 `osascript`，點了會打開「指令碼編寫程式」）。
-- 底部按鈕依序是 Commands（指令面板，展開時顯示快捷鍵）、Settings、**Accounts & keys**（GitLab 沒登入、OpenRouter key 沒設或無效時旁邊有黃點）、Add machine。
+- 底部按鈕依序是 Commands（指令面板，展開時顯示快捷鍵）、Settings、**Customize**（滑桿圖示；GitLab 沒登入、OpenRouter key 沒設或無效時旁邊有黃點）、Add machine。
 
-**Accounts & keys（`my-setup`）**
-- 一個對話框列出這套設定需要的登入和 key，每項顯示狀態和一個按鈕：GitLab（安裝 glab；登入是 glab 自己的網頁登入：瀏覽器打開 GitLab 的授權頁，按 Authorize 就好，`gitlab_login.py` 在背景代答 glab 的選單；等待授權時可以「複製連結」到別的瀏覽器 profile 開，或「取消」；登入後有「登出」）、OpenRouter key、Slack token（選用）、terminal-notifier（安裝／打開通知設定）、Claude Code（沒裝時安裝；還拿不到用量時「登入 Claude Code」，開一個分頁執行 `/login`）。
+**Customize（`my-setup`）**
+- 一個對話框，上半是「帳號與金鑰」：列出這套設定需要的登入和 key，每項顯示狀態和一個按鈕：GitLab（安裝 glab；登入是 glab 自己的網頁登入：瀏覽器打開 GitLab 的授權頁，按 Authorize 就好，`gitlab_login.py` 在背景代答 glab 的選單；等待授權時可以「複製連結」到別的瀏覽器 profile 開，或「取消」；登入後有「登出」）、OpenRouter key、Slack token（選用）、terminal-notifier（安裝／打開通知設定）、Claude Code（沒裝時安裝；還拿不到用量時「登入 Claude Code」，開一個分頁執行 `/login`）。
 - key 在對話框裡貼上（遮罩顯示），存到 `~/.config/herdr-app/secrets/`（資料夾 0700、檔案 0600）：OpenRouter 是 `openrouter.key`，Slack 是 `slack.token`。存完立刻向服務確認能用。不會進 repo。以前留下的 `openrouter-rename.key`／`openrouter-decider.key` 仍然優先給改名／狀態判斷用，對話框的 OpenRouter 那一列會註明。
-- 從左下角的鑰匙、GitLab 面板（沒登入時面板直接顯示「用瀏覽器登入」）、改名對話框（沒有 key 時有「Set key」）都能打開；`install.sh` 裝完也會自動打開。
+- 下半是「外觀」：**毛玻璃**開關。開啟後整個視窗鋪一層半透明色、透出模糊的桌面（`window_blur`），左側、上方分頁列和狀態列都在玻璃上；中間的開發區域是浮在上面的實色圓角卡片（陰影、細邊框），終端機維持原本的底色。分隔線改成半透明白，hover 和選取的底色加強（玻璃上淡的底色會看不見），側欄的拖動線看不見但還能拖，次要文字調亮，淺色桌布上也看得清楚。設定和它取代掉的原值存在 `~/.config/herdr-app/data/my-setup/style.json`：關閉時照原值還原；`install.sh` 換 layout 時用 `my-setup/style.py` 套回去，`export.sh` 匯出時拿掉，不進 repo。
+- 從左下角的 Customize、GitLab 面板（沒登入時面板直接顯示「用瀏覽器登入」）、改名對話框（沒有 key 時有「Set key」）都能打開；`install.sh` 裝完也會自動打開。
 
 **Pane 與底部狀態列（`my-pane`、`my-status`）**
 - Pane 標題列比較安靜：只有資料夾和 agent 狀態，加上 split、zoom、close 按鈕，高 26px。
@@ -66,9 +69,9 @@
 - macOS 上的 Herdr，而且至少開過一次，讓 `~/.config/herdr-app` 存在。
 - `python3`（多數 mod 的背景工作和安裝程式都會用到）、`git`、`jq`（Claude Code 的 status line 會用到）。
 - 點通知跳回 agent 要 `terminal-notifier`（`brew install terminal-notifier`），第一次要在「系統設定 → 通知」允許它。
-- GitLab 面板要 [`glab`](https://gitlab.com/gitlab-org/cli) 並登入過（Accounts & keys 或面板上的按鈕會幫你裝和登入）。
-- （選用）改名時的名字建議、背景指令中的 agent 狀態判斷要 OpenRouter key（在 Accounts & keys 貼上）。
-- （選用）Slack 上 tag 我的 MR 也進 To review：在 Accounts & keys 的 Slack 按「設定」，輸入框下的「打開 Slack ↗」會開好已填入 manifest（只有 user scope `search:read`）的建立 App 頁；建好後 Install to Workspace，把 **User OAuth Token**（`xoxp-`）貼回來按「儲存」。沒有這個 token 時就只看 GitLab。
+- GitLab 面板要 [`glab`](https://gitlab.com/gitlab-org/cli) 並登入過（Customize 或面板上的按鈕會幫你裝和登入）。
+- （選用）改名時的名字建議、背景指令中的 agent 狀態判斷要 OpenRouter key（在 Customize 貼上）。
+- （選用）Slack 上 tag 我的 MR 也進 To review：在 Customize 的 Slack 按「設定」，輸入框下的「打開 Slack ↗」會開好已填入 manifest（只有 user scope `search:read`）的建立 App 頁；建好後 Install to Workspace，把 **User OAuth Token**（`xoxp-`）貼回來按「儲存」。沒有這個 token 時就只看 GitLab。
 
 ## 安裝
 
@@ -85,13 +88,13 @@ cd herdr-layout
 1. 把 `mods/my-*` 複製到 `~/.config/herdr-app/mods/`，`layouts/my-main.json` 複製到 `layouts/`。已經一樣的不動，這台自己其他名字的 mod 也不動。
 2. 把提示音複製到 `~/.config/herdr-app/sounds/`，並在 `settings.json` 的 `sounds` 指定它們。其他設定不動。
 3. Claude Code：把 `claude/statusline-command.sh` 複製到 `~/.claude/`，並把 `~/.claude/settings.json` 的 `statusLine` 指向它。其他設定不動；這台沒有 Claude Code 時跳過。
-4. Herdr 有在執行的話，直接切換到 `my-main`，並打開 Accounts & keys 讓你登入、貼 key。
+4. Herdr 有在執行的話，直接切換到 `my-main`，並打開 Customize 讓你登入、貼 key。
 
 Grok 的設定不會動。被取代的檔案都會先備份到 `~/.config/herdr-app-backups/<時間>/`，重複執行也安全。`settings.json` 讀不懂（不是合法的 JSON）時不會改它，會告訴你要手動設什麼。
 
 `zoom` 是每台螢幕各自的偏好，不會被複製。需要的話用 ⌘= / ⌘- 調整。
 
-讓 agent 幫你裝：在 Herdr 裡開一個 Claude Code，請它照 `AGENTS.md` 安裝。它會先跑 `--plan`、檢查你原本改過的 mod 再決定怎麼合併，登入和 key 交給你在 Accounts & keys 裡處理。
+讓 agent 幫你裝：在 Herdr 裡開一個 Claude Code，請它照 `AGENTS.md` 安裝。它會先跑 `--plan`、檢查你原本改過的 mod 再決定怎麼合併，登入和 key 交給你在 Customize 裡處理。
 
 ## 這些 mod 會執行或讀取的東西
 
@@ -99,7 +102,7 @@ Grok 的設定不會動。被取代的檔案都會先備份到 `~/.config/herdr-
 
 | mod | 做什麼 |
 |---|---|
-| `my-agents` | 執行 `terminal-notifier` 發 macOS 通知（沒裝時用 `osascript`），點通知時執行 `herdr-app do agent.focus` 跳到那個 agent；執行 `herdr-app status` 確認右下角提示的數量再關掉；每 5 秒執行 `python3 recap.py`，讀取 `~/.claude/sessions/`、Claude Code 的對話紀錄，以及 `~/.grok/` 的 session，找出最新的 recap 和最後一則回應；有開 opencode 時，它的回應透過 `hc` 和 `opencode api` 從它在跑的 server 讀，用 terminal 標題「OC | <session 標題>」對到 session。有 agent 剛停下、或已有判斷結果時每 4 秒執行 `python3 decide.py`，其他時候每分鐘一次：Claude Code 停下來但還有 shell 開著時，把最後一則回應和正在跑的指令（先遮蔽常見的 secret 格式）送到 OpenRouter 的 decision model，這是這個 mod 唯一連網路的地方。key 是 Accounts & keys 存的 `~/.config/herdr-app/secrets/openrouter.key`（有舊的 `openrouter-decider.key` 時優先用它），不在這個 repo 裡；沒有 key 時不做判斷，狀態維持 Herdr 回報的。同一次停下只問一次；每次問的內容和結果都記在 `~/.config/herdr-app/data/my-agents/decisions.log`，沒問的也會記原因，這份 log 不在這個 repo 裡。 |
+| `my-agents` | 執行 `terminal-notifier` 發 macOS 通知（沒裝時用 `osascript`），點通知時執行 `herdr-app do agent.focus` 跳到那個 agent；執行 `herdr-app status` 確認右下角提示的數量再關掉；每 5 秒執行 `python3 recap.py`，讀取 `~/.claude/sessions/`、Claude Code 的對話紀錄，以及 `~/.grok/` 的 session，找出最新的 recap 和最後一則回應；有開 opencode 時，它的回應透過 `hc` 和 `opencode api` 從它在跑的 server 讀，用 terminal 標題「OC | <session 標題>」對到 session。有 agent 剛停下、或已有判斷結果時每 4 秒執行 `python3 decide.py`，其他時候每分鐘一次：Claude Code 停下來但還有 shell 開著時，把最後一則回應和正在跑的指令（先遮蔽常見的 secret 格式）送到 OpenRouter 的 decision model，這是這個 mod 唯一連網路的地方。key 是 Customize 存的 `~/.config/herdr-app/secrets/openrouter.key`（有舊的 `openrouter-decider.key` 時優先用它），不在這個 repo 裡；沒有 key 時不做判斷，狀態維持 Herdr 回報的。同一次停下只問一次；每次問的內容和結果都記在 `~/.config/herdr-app/data/my-agents/decisions.log`，沒問的也會記原因，這份 log 不在這個 repo 裡。 |
 | `my-gitlab` | 執行 `glab api graphql` 讀取自己的 MR（開著的、7 天內 merge 的、要我 review 的）；跟著每次更新執行 `python3 slack.py`：有 `~/.config/herdr-app/secrets/slack.token`（不在這個 repo 裡）時，用 Slack 的 `search.messages` 找最近 7 天 tag 我的訊息（不含私訊），取出裡面的 GitLab MR 網址，再用 `glab api graphql` 查它們的狀態；確認視窗按下 Close 時，用 `mergeRequestUpdate` 把那個 MR 設成 closed；點擊時執行 `open <網址>`。 |
 | `my-spaces` | 執行 `git`（status、rev-parse）讀取分支和 worktree；執行 `hc machine ls` 列出其他機器。 |
 | `my-setup` | 打開時（以及側邊欄底部每 10 分鐘）執行 `python3 status.py`：`glab api user` 確認 GitLab 登入、檢查 `secrets/` 裡有沒有 key（不會顯示內容）、`terminal-notifier` 和 Claude Code 有沒有裝、`data/my-status/usage.json` 有沒有在更新。存 key 後各打一次 OpenRouter 的 `/api/v1/key`、Slack 的 `auth.test` 確認能用（結果記在 `data/my-setup/verified.json`，只存 key 的雜湊）。按「用瀏覽器登入」時執行 `python3 gitlab_login.py`：在看不到的 `hc` terminal 裡跑 `glab auth login` 並代答它的選單；「登出」執行 `glab auth logout`。按「安裝」才會開新分頁執行 `brew install glab`／`brew install terminal-notifier` 或 Claude Code 的官方安裝指令（`curl -fsSL https://claude.ai/install.sh \| bash`）；「打開 Slack ↗」「通知設定」用 `open` 打開網頁或系統設定。 |

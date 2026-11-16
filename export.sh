@@ -18,7 +18,8 @@ for d in "$APP"/mods/my-*/; do
   found=1
 done
 [ "$found" = 1 ] || { echo "${APP}/mods 裡沒有 my-* mod。" >&2; exit 1; }
-cp "$APP/layouts/my-main.json" "$REPO/layouts/"
+# The look picked in Customize (frosted glass) is this machine's: left out of the repo.
+python3 "$APP/mods/my-setup/style.py" undo "$APP/layouts/my-main.json" "$APP/data/my-setup/style.json" "$REPO/layouts/my-main.json"
 cp "$APP/sounds/done.mp3" "$APP/sounds/blocked.mp3" "$REPO/sounds/"
 mkdir -p "$REPO/claude"
 cp "$HOME/.claude/statusline-command.sh" "$REPO/claude/"

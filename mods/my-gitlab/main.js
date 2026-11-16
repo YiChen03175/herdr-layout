@@ -22,7 +22,22 @@ import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { exec, run, theme, layout, shared, setShared, props, openOverlay, closeOverlay, appHome } from "herdr";
 
+// The panel's look: a solid card of its own (frosted glass makes the theme background
+// see-through).
+function card(el, t) {
+  return el.bg(t.background.slice(0, 7)).rounded(10).overflow_hidden().border_1().border_color(t.border);
+}
+// While the panel slides (my-tabs shares "panel.slide": {w}) its width changes every
+// frame: the content keeps its full width from the panel's left edge and is cut at the
+// right one, so it slides in and out rather than squeezing.
+function pinned(el) {
+  const s = shared("panel.slide");
+  return s ? div().size_full().overflow_hidden().child(el.w(s.w).flex_none()) : el;
+}
+
 const ICON = (name) => `mods/my-gitlab/${name}.svg`;
+// Drawn at 13px: the same icons with a thicker line, so they look as heavy as at 14.
+const ICON_SM = (name) => `mods/my-gitlab/sm/${name}.svg`;
 const MERGED_DAYS = 7;
 // Refreshed this often while the panel shows (by the panel), and every 5 minutes
 // while it's folded away (by the headless copy, for the tab bar's review count).
@@ -96,11 +111,11 @@ const NO_GLAB = "找不到 glab：brew install glab，然後 glab auth login。"
 // What an error means the person has to do first: install glab, or log in.
 const needOf = (error) => !error ? null : error === NO_GLAB ? "glab"
   : /401|unauthori[sz]ed|unauthenticated|no token|not logged in|auth login/i.test(error) ? "login" : null;
-// An install runs in a new tab, a login in Accounts & keys (my-setup); the panel
+// An install runs in a new tab, a login in Customize (my-setup); the panel
 // retries meanwhile (LOGIN_WAIT at most).
 const LOGIN_WAIT = 5 * 60 * 1000;
 const inTab = (name, command) => run("tab.new", { name, argv: ["sh", "-c", `${command}; echo; echo "完成後可以關掉這個分頁。"; exec "\${SHELL:-/bin/zsh}" -l`] });
-// Accounts & keys, at its mod.json size; props.focus: the item it opens on.
+// Customize, at its mod.json size; props.focus: the item it opens on.
 const openSetup = (setupProps) => openOverlay({ mod: "my-setup", kind: "dialog", width: 560, height: 600, props: setupProps });
 
 // Runs a GitLab GraphQL request through glab; resolves with its data, or throws
@@ -413,7 +428,7 @@ export default class Gitlab extends View {
   // (One approval is all a merge request needs here.) Rows without approval
   // data (To review) show the pipeline alone.
   status(t, mr) {
-    const icon = (name, color) => div().w(14).flex_none().child(svg(ICON(name)).size(13).text_color(t[color]));
+    const icon = (name, color) => div().w(14).flex_none().child(svg(ICON_SM(name)).size(13).text_color(t[color]));
     if (conflicted(mr)) return icon("triangle-alert", "ansi1");
     const ci = mr.headPipeline?.status;
     const ciOk = !ci || ci === "SUCCESS";
@@ -433,7 +448,7 @@ export default class Gitlab extends View {
   }
 
   mergedRow(t, mr) {
-    const glyph = div().w(14).flex_none().child(svg(ICON("merge")).size(13).text_color(t.ansi5));
+    const glyph = div().w(14).flex_none().child(svg(ICON_SM("merge")).size(13).text_color(t.ansi5));
     return this.row(t, "merged", mr, glyph, null, ago(mr.mergedAt));
   }
 
@@ -452,18 +467,18 @@ export default class Gitlab extends View {
         .text_size(11.5).text_color(t.muted)
         .when(foldable, (el) => el.cursor_pointer().hover((s) => s.text_color(t.foreground))
           .on_click((_e, cx) => { open ? this.folded.add(id) : this.folded.delete(id); cx.notify(); }))
-        .child(svg(ICON(icon)).size(13).flex_none())
+        .child(svg(ICON_SM(icon)).size(13).flex_none())
         .child(div().font_semibold().child(label))
         .child(div().text_color(t.dim).child(String(items.length)))
         .child(div().flex_1())
-        .when(foldable, (el) => el.child(svg(`mods/workspace-chrome/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.dim))))
+        .when(foldable, (el) => el.child(svg(`mods/my-gitlab/chevron-${open ? "down" : "right"}.svg`).size(11).flex_none().text_color(t.dim))))
       .when(open, (el) => el.children(items.map((mr) => row(t, mr))));
   }
 
   // Instead of glab's error: one button that does what's missing (an install in a
-  // new tab, a login in Accounts & keys), then retries until it works.
+  // new tab, a login in Customize), then retries until it works.
   signIn(t, need) {
-    // Logging in: Accounts & keys opens on GitLab and starts glab's web login
+    // Logging in: Customize opens on GitLab and starts glab's web login
     // (the browser opens GitLab's Authorize page).
     const start = (cx) => {
       if (need === "glab") inTab("Install glab", "brew install glab");
@@ -493,11 +508,16 @@ export default class Gitlab extends View {
         .child("所有帳號與 key"));
   }
 
-  render() {
+  render(cx) {
     const t = theme();
     if (props()?.menu) return this.menu(t, props().menu);
     if (props()?.closeMr) return this.closeDialog(t, props().closeMr);
     if (this.headless) return div();
+    return pinned(this.panel(t));
+  }
+
+  // The panel itself.
+  panel(t) {
     const L = this.lists;
     // Refresh: one button with how old the list is ("3m"), icon and age in one color.
     const icon = svg(this.loading ? "mods/workspace-chrome/spinner.svg" : ICON("refresh")).size(13);
@@ -523,8 +543,7 @@ export default class Gitlab extends View {
         .child(this.section(t, "open", "git-pull-request", "Open", L.open, (t, mr) => this.openRow(t, mr)))
         .child(this.section(t, "merged", "merge", "Merged", L.merged, (t, mr) => this.mergedRow(t, mr))));
 
-    return v_flex().id("gitlab").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background)
-      .border_1().border_color(t.border).text_color(t.foreground).text_size(13)
+    return card(v_flex().id("gitlab").size_full().min_h(0), t).text_color(t.foreground).text_size(13)
       .child(header).child(body);
   }
 }

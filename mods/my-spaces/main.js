@@ -24,12 +24,40 @@ const FADE = { duration: 160, easing: "ease-out" };
 const ROW_GAP = 2;
 // Mini rail: icon squares sit this far from the sidebar's sides and section edges.
 const RAIL_EDGE = 5;
+// Frosted glass (Customize): a selection is pressed into the glass, as iOS's segmented
+// controls draw it: a darker, still see-through well with a narrow shadow inside all
+// its edges. gpui has no inset shadow, so it's four faint rings 0.4 px apart: the edge
+// is under all four, each step in under one fewer, so it fades out over 1.6 px. On the
+// see-through window their opacities add up (gpui sums alpha there): each ring is
+// barely there, the edge about 3% darker than the well.
+// Hover is a faint lift. Off, rows look as before.
+let glassAt = 0, glassNow = false;
+const glassy = () => {
+  if (Date.now() - glassAt > 300) { glassAt = Date.now(); glassNow = Boolean(layout()?.window_blur); }
+  return glassNow;
+};
+const darkUi = (t) => parseInt(t.foreground.slice(1, 3), 16) > 128;
+const GLASS_PICK = {
+  dark: { fill: "#0000001f", ring: "#00000002", hover: "#ffffff33" },
+  light: { fill: "#00000014", ring: "#00000002", hover: "#0000001f" },
+};
+const GLASS_RINGS = [0.4, 0.8, 1.2, 1.6];
+const glassPick = (t) => GLASS_PICK[darkUi(t) ? "dark" : "light"];
+// el: the selected box (positioned: relative or absolute); r: its corner radius; b: its
+// own border's width (the rings go over it, so the shadow starts at the very edge).
+const glassSelected = (el, t, r, b = 0) => {
+  const p = glassPick(t);
+  const edge = (w, c) => div().absolute().top(-b).left(-b).right(-b).bottom(-b).rounded(r).border(w).border_color(c);
+  return el.bg(p.fill).children(GLASS_RINGS.map((w) => edge(w, p.ring)));
+};
+const glassHover = (s, t) => s.bg(glassPick(t).hover);
+
 // On the mini rail: a square as tall as the row, centered on its 18 px icon,
 // in the row's selected or hover color (nothing otherwise).
 const railSquare = (t, rowH, selected, hovered) => {
   const inset = (rowH - 18) / 2;
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
-    .when(selected || hovered, (el) => el.bg(selected ? t.selected : t.hover));
+    .when(selected || hovered, (el) => (glassy() ? (selected ? glassSelected(el, t, 8) : glassHover(el, t)) : el.bg(selected ? t.selected : t.hover)));
 };
 // An avatar's letter. A space someone named shows its name's; an unnamed one
 // (named after where its first terminal is, so it changes with every cd) keeps
@@ -393,7 +421,7 @@ export default class Spaces extends View {
           localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
           cx.notify();
         })
-        .child(svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(13).flex_none())
+        .child(svg(`mods/my-spaces/${m ? "server" : "monitor"}.svg`).size(13).flex_none())
         .when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? "This computer"))
           .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
           .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
@@ -406,11 +434,11 @@ export default class Spaces extends View {
           .when(connected, el => el.child(div().id(`machine-add-${m ?? "local"}`).flex_none().px(4).rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); }).child("+")))
           .child(div().size(6).rounded(3).flex_none().bg(connected ? t.ansi2 : t.dim))
-          .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
+          .child(svg(`mods/my-spaces/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
       const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().px(8).gap(7).items_center().rounded(7)
         .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
-        .child(svg("mods/workspace-chrome/plus.svg").size(12)).when(!collapsed, el => el.child("New space there"));
+        .child(svg("mods/my-spaces/plus-12.svg").size(12)).when(!collapsed, el => el.child("New space there"));
       if (!collapsed && rebuilt) return [head];
       return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];
     });
@@ -456,8 +484,8 @@ export default class Spaces extends View {
       .flex_none()
       .justify_center()
       .rounded(8)
-      .when(on, (el) => el.bg(t.selected))
-      .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
+      .when(on, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(t.selected)))
+      .when(!on, (el) => el.hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover))))
       .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
       .when(this.pressed !== null && this.over === w.id && this.pressed !== w.id, (el) => el.child(
         div().absolute().left(0).right(0).h(2).bg(t.accent)
@@ -493,7 +521,7 @@ export default class Spaces extends View {
         h_flex()
           .gap(9)
           .items_center()
-          .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
+          .when(Boolean(tree), el => el.pl(22).child(svg("mods/my-spaces/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, el => el.child(this.avatar(w, t)))
           .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
           .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
@@ -524,7 +552,9 @@ export default class Spaces extends View {
       .rounded(8)
       // On the mini rail the row is wider than tall: its look goes on a square
       // around the avatar instead (below), which glides with it.
-      .when(!small, (el) => el.overflow_hidden().when(w.active, (el) => el.bg(t.selected)).when(!w.active, (el) => el.hover((s) => s.bg(t.hover))))
+      .when(!small, (el) => el.overflow_hidden()
+        .when(w.active, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(t.selected)))
+        .when(!w.active, (el) => el.hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover)))))
       // On the mini rail only the square you can see is clickable, not the row around it.
       .when(!small, (el) => el.on_hover(hover).on_click(select))
       .on_mouse_down("right", () => this.menu(w))

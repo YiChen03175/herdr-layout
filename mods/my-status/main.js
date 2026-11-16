@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { h_flex } from "gpui-base";
-import { spaces, panes, agents, focused, window, theme, readTextFile, appHome, exec, shared } from "herdr";
+import { spaces, panes, agents, focused, window, theme, readTextFile, appHome, exec, shared, layout } from "herdr";
 
 // The bottom bar: which machine; where the focused terminal is in git (its
 // branch, * with uncommitted changes, and the worktree when it's a linked one);
@@ -33,6 +33,8 @@ const NUM_SIZE = 9.5;
 const DIGIT_W = 5.6; // one digit at NUM_SIZE, semibold (layout px)
 const NUM_PAD = 4;   // from the number to its fill's end
 const NUM_GAP = 3;   // the least room between the week's two numbers
+// The background colour without its alpha (frosted glass makes it see-through).
+const solid = (c) => c.slice(0, 7);
 
 const pad = (n) => String(n).padStart(2, "0");
 const when = (ts) => {
@@ -130,7 +132,7 @@ export default class WorkspaceStatus extends View {
       + (w.resets ? `，${when(w.resets)} 重置` : "");
     const fill = (p, color, alpha = 1) => div().absolute().top(0).left(0).h_full().w(reach(p)).rounded_full().bg(color).opacity(alpha);
     const number = (p) => h_flex().absolute().top(0).left(0).h_full().w(reach(p)).items_center().justify_end().pr(NUM_PAD)
-      .text_size(NUM_SIZE).font_weight(600).text_color(t.background).child(text(p));
+      .text_size(NUM_SIZE).font_weight(600).text_color(solid(t.background)).child(text(p));
     // Fable's number ends left of the week's, with room between them.
     const both = part != null && reach(part) + NUM_GAP <= reach(w.pct) - textW(w.pct);
     return h_flex().gap(6).items_center().flex_none().tooltip(tip)
@@ -138,7 +140,7 @@ export default class WorkspaceStatus extends View {
       .child(div().relative().w(BAR_W).h(BAR_H).rounded_full().overflow_hidden()
         .child(div().absolute().inset_0().rounded_full().bg(t.dim).opacity(TRACK))
         .child(fill(w.pct, hot ? t.blocked : t.accent))
-        .when(part != null, el => el.child(fill(part, t.background, PART)))
+        .when(part != null, el => el.child(fill(part, solid(t.background), PART)))
         .child(number(w.pct))
         .when(both, el => el.child(number(part))));
   }
@@ -155,8 +157,9 @@ export default class WorkspaceStatus extends View {
     // my-agents' decision model can say a stopped agent is really waiting on you.
     const over = shared("agents.effective") ?? {};
     const needs = list.filter(a => a.status === "blocked" || ((a.status === "done" || a.status === "idle") && over[a.address] === "blocked")).length;
-    const label = (icon, text) => h_flex().gap(6).items_center().min_w(0).child(svg(`mods/workspace-chrome/${icon}.svg`).size(13).flex_none()).child(div().truncate().child(text));
-    return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).border_t(1).border_color(t.border).text_size(11.8).text_color(t.muted)
+    const label = (icon, text) => h_flex().gap(6).items_center().min_w(0).child(svg(`mods/my-status/${icon}.svg`).size(13).flex_none()).child(div().truncate().child(text));
+    // Under frosted glass (Customize) the work card's edge parts it from the bar: no line.
+    return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).when(!layout()?.window_blur, el => el.border_t(1).border_color(t.border)).text_size(11.8).text_color(t.muted)
       .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(branch), el => el.child(label("branch", `${branch}${g?.dirty ? "*" : ""}`)))
       .when(Boolean(g?.worktree), el => el.child(label("git-compare", `worktree ${g.worktree}`)))

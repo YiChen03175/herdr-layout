@@ -47,8 +47,8 @@ them.
 6. **Verify:** for each mod, `herdr-app check ~/.config/herdr-app/mods/<mod>`
    must print `check passed`; `herdr-app status` must show `"errors": []`; take
    `herdr-app shot` and look at it (the window must be in front to redraw).
-7. **Logins and keys:** `install.sh` opens the **Accounts & keys** dialog
-   (`my-setup`; also the key icon at the sidebar's bottom left). Tell the person
+7. **Logins and keys:** `install.sh` opens the **Customize** dialog
+   (`my-setup`; also the sliders icon at the sidebar's bottom left). Tell the person
    which items are missing and that they set them there. Read the state with
    `python3 ~/.config/herdr-app/mods/my-setup/status.py` (it never prints a key).
 

@@ -1,17 +1,97 @@
-// Accounts and keys: what each part of this layout needs (GitLab login, an
-// OpenRouter key, a Slack token, terminal-notifier, Claude Code's login), whether
-// it has it (status.py), and one button to get it. Installs run in a new tab;
-// keys are pasted here (masked) and saved to <app home>/secrets/ (0600).
-// Opened as a dialog: `mod.open my-setup`, the footer's Accounts, the GitLab
+// Customize: what each part of this layout needs (GitLab login, an OpenRouter key,
+// a Slack token, terminal-notifier, Claude Code's login), whether it has it
+// (status.py), and one button to get it; then the look (frosted glass). Installs
+// run in a new tab; keys are pasted here (masked) and saved to <app home>/secrets/ (0600).
+// Opened as a dialog: `mod.open my-setup`, the footer's Customize, the GitLab
 // panel and the rename dialog; props.focus names the item to open on.
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
-import { exec, run, props, closeOverlay, theme, appHome, readTextFile, writeTextFile } from "herdr";
+import { exec, run, props, closeOverlay, theme, appHome, readTextFile, writeTextFile, layout } from "herdr";
 
 const STATUS = () => `${appHome()}/mods/my-setup/status.py`;
 const LOGIN = () => `${appHome()}/mods/my-setup/gitlab_login.py`;
 const SECRETS = () => `${appHome()}/secrets`;
+// The look chosen here: what it puts on the layout and what that replaced
+// (style.py applies it after install.sh replaces the layout, export.sh takes it off).
+const STYLE = () => `${appHome()}/data/my-setup/style.json`;
+
+// Frosted glass, as macOS draws a window: one tint over the blurred desktop, laid
+// once at the root (the bars and sidebar paint nothing of their own); the window's
+// base is clear (the theme background with no alpha: terminals keep its colour);
+// lines, hovers and selections are a little white (black on a light theme) so the
+// glass shows through them; the work area is a solid card floating on the glass.
+function glassStyle(t) {
+  const rgb = (c) => c.slice(0, 7).toLowerCase();
+  const solid = rgb(t.background);
+  const n = parseInt(solid.slice(1), 16);
+  const dark = (0.299 * (n >> 16) + 0.587 * ((n >> 8) & 255) + 0.114 * (n & 255)) < 128;
+  const ink = dark ? "#ffffff" : "#000000";
+  return {
+    root: {
+      window_blur: true,
+      colors: {
+        background: `${solid}00`,
+        // Light glass on both: a selection pressed into it reads a tone darker.
+        canvas: dark ? "#2e3036a3" : "#f2f2f5b8",
+        chrome: "#00000000",
+        // Quieter text stays readable over a bright desktop.
+        muted: dark ? "#b9bdc6" : "#45484f",
+        dim: dark ? "#8d929c" : "#6a6e77",
+        // Lines: a hairline of light on dark glass (of shade on light glass), as glass edges catch it.
+        border: `${ink}${dark ? "24" : "1f"}`,
+        input: `${ink}${dark ? "38" : "30"}`,
+        // Lighter glass (the sidebar and tab bar draw a selection as a glass capsule
+        // with a rim themselves; these are for everything else).
+        hover: dark ? "#ffffff33" : "#0000001f",
+        selected: dark ? "#ffffff26" : "#ffffffb3",
+        raised: `${ink}${dark ? "1a" : "12"}`,
+      },
+    },
+    nodes: {
+      // The sidebar's drag line: a hairline like the other lines on the glass.
+      body: { divider: { width: 1, color: `${ink}${dark ? "1f" : "1a"}` } },
+      work: { padding: [0, 3] },
+      // The terminal and the side panel: two solid cards on the glass, the glass between
+      // them as wide as round the rest (the work column's padding).
+      // (The panel's mods draw its card.)
+      "work-body": { background: "#00000000", padding: [0, 0], gap: 3 },
+      // The card doesn't clip what's in it: inset enough that the terminal's square
+      // corners stay inside its 10 px rounding (at 4 across and 3 down, they do).
+      // No shadow: on the see-through window a shadow's opacity adds to the glass's,
+      // leaving a dark haze round the card (worst at the corners); its edge parts it.
+      "main-card": { background: solid, radius: 10, border: { width: 1, color: `${ink}1a` }, padding: [3, 4] },
+    },
+  };
+}
+
+// A null value removes the key; colors merge by name (as style.py).
+function patchNode(node, changes) {
+  for (const [key, value] of Object.entries(changes)) {
+    if (key === "colors" && value && typeof value === "object") {
+      const colors = { ...(node.colors ?? {}), ...value };
+      for (const k of Object.keys(colors)) if (colors[k] == null) delete colors[k];
+      if (Object.keys(colors).length) node.colors = colors; else delete node.colors;
+    } else if (value == null) delete node[key];
+    else node[key] = value;
+  }
+}
+
+function applyStyle(tree, style) {
+  patchNode(tree, style.root ?? {});
+  const walk = (n) => { patchNode(n, style.nodes?.[n.id] ?? {}); (n.children ?? []).forEach(walk); };
+  walk(tree);
+}
+
+// What `style` would replace in `tree`, as a style that puts it back.
+function undoOf(tree, style) {
+  const was = (node, changes) => Object.fromEntries(Object.keys(changes).map((k) => [k,
+    k === "colors" ? Object.fromEntries(Object.keys(changes.colors).map((c) => [c, node.colors?.[c] ?? null])) : node[k] ?? null]));
+  const nodes = {};
+  const walk = (n) => { if (style.nodes?.[n.id]) nodes[n.id] = was(n, style.nodes[n.id]); (n.children ?? []).forEach(walk); };
+  walk(tree);
+  return { root: was(tree, style.root ?? {}), nodes };
+}
 // Where gitlab_login.py keeps the authorize URL while a login waits.
 const LOGIN_URL = () => `${appHome()}/data/my-setup/gitlab-login-url`;
 const REFRESH = 4000; // local checks while open, so an install finished in its tab shows up
@@ -238,6 +318,38 @@ export default class Setup extends View {
     });
   }
 
+  // Frosted glass: on, its look goes on the layout (layout.set saves it) and into
+  // style.json with what it replaced, so off puts that back and install.sh keeps it.
+  glassOn() {
+    return Boolean(layout()?.window_blur);
+  }
+
+  setGlass(on, cx) {
+    cx.spawn(async (cx) => {
+      const root = layout();
+      if (!root) return;
+      const tree = JSON.parse(JSON.stringify(root));
+      let saved = {};
+      try { saved = JSON.parse(await readTextFile(STYLE())); } catch {}
+      // Off: what glass replaced; with no record, its own keys go (window_blur, colors).
+      let style = {};
+      if (on) {
+        if (saved.undo) applyStyle(tree, saved.undo); // a look already on: from the plain one
+        style = glassStyle(theme());
+        style.undo = undoOf(tree, style);
+        applyStyle(tree, style);
+      } else {
+        applyStyle(tree, saved.undo ?? { root: { window_blur: null } });
+      }
+      run("layout.set", { layout: tree });
+      try {
+        await must("mkdir", ["-p", `${appHome()}/data/my-setup`]);
+        await writeTextFile(STYLE(), JSON.stringify(style, null, 2) + "\n", await readTextFile(STYLE()).catch(() => null));
+      } catch {} // the layout has it either way; only a reinstall would lose it
+      cx.notify();
+    });
+  }
+
   key(e, cx) {
     if (e.key === "escape") {
       if (this.editing) this.edit(this.editing, cx); else closeOverlay(props()?.overlay);
@@ -310,14 +422,23 @@ export default class Setup extends View {
           .when(actions.length > 0, (el) => el.child(h_flex().self_center().flex_none().gap(8)
             .children(actions.map(([text, go, solid], i) => button(`su-${item.id}-${i}`, text, solid, go))))));
     };
+    const heading = (text) => div().px(12).pt(10).pb(2).text_size(11).font_medium().text_color(t.dim).child(text);
+    const glass = this.glassOn();
+    const style = h_flex().flex_none().px(12).py(8).gap(10).items_center()
+      .child(div().w(12).flex_none().flex().items_center().justify_center()
+        .child(div().size(8).rounded_full().bg(glass ? t.accent : t.dim)))
+      .child(div().flex_1().text_size(13).font_semibold().child("毛玻璃"))
+      .child(button("su-glass", glass ? "關閉" : "開啟", !glass, (_e, cx) => this.setGlass(!glass, cx)));
     return v_flex().id("my-setup").track_focus(this.handle).on_key_down((e, cx) => this.key(e, cx))
       .size_full().min_h(0).pt(16).gap(4).bg(t.popover).text_color(t.foreground)
       .child(h_flex().px(16).items_center().pb(6)
-        .child(div().flex_1().text_size(15).font_semibold().child("Accounts & keys"))
+        .child(div().flex_1().text_size(15).font_semibold().child("Customize"))
         .child(div().text_size(11).text_color(t.dim).child("Esc")))
       .child(div().px(16).pb(4).text_size(11.5).text_color(t.dim).whitespace_normal()
         .child("金鑰只存放在本機的 ~/.config/herdr-app/secrets/，僅用於向對應服務驗證，不納入版本控制。"))
       // The rows scroll, so an open key box never pushes the last ones out of sight.
-      .child(v_flex().id("su-list").flex_1().min_h(0).px(16).pb(12).gap(2).overflow_y_scrollbar().children(ITEMS.map(row)));
+      .child(v_flex().id("su-list").flex_1().min_h(0).px(16).pb(12).gap(2).overflow_y_scrollbar()
+        .child(heading("帳號與金鑰")).children(ITEMS.map(row))
+        .child(heading("外觀")).child(style));
   }
 }

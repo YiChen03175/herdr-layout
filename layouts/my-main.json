@@ -13,7 +13,7 @@
         "mod": "my-tabs"
       },
       "size": {
-        "px": 42
+        "px": 39
       },
       "window_drag": true
     },
@@ -87,7 +87,6 @@
           },
           "min": 40,
           "max": 480,
-          "background": "chrome",
           "resizable": false
         },
         {
@@ -99,33 +98,39 @@
               "type": "row",
               "children": [
                 {
-                  "id": "main",
-                  "type": "block",
-                  "content": {
-                    "tab": "active",
-                    "pane": {
-                      "header": {
-                        "content": {
-                          "mod": "my-pane"
-                        },
-                        "reveal": "always",
-                        "height": 26,
-                        "position": "top"
-                      },
-                      "background": "background",
-                      "border": {
-                        "width": 0,
-                        "color": "border"
-                      },
-                      "focus": {
-                        "width": 0,
-                        "color": "accent"
-                      },
-                      "radius": 0,
-                      "gap": 8,
-                      "lone": true
+                  "id": "main-card",
+                  "type": "row",
+                  "children": [
+                    {
+                      "id": "main",
+                      "type": "block",
+                      "content": {
+                        "tab": "active",
+                        "pane": {
+                          "header": {
+                            "content": {
+                              "mod": "my-pane"
+                            },
+                            "reveal": "always",
+                            "height": 26,
+                            "position": "top"
+                          },
+                          "background": "background",
+                          "border": {
+                            "width": 0,
+                            "color": "border"
+                          },
+                          "focus": {
+                            "width": 0,
+                            "color": "accent"
+                          },
+                          "radius": 0,
+                          "gap": 8,
+                          "lone": true
+                        }
+                      }
                     }
-                  }
+                  ]
                 },
                 {
                   "id": "panel",
@@ -213,5 +218,6 @@
     12,
     28
   ],
-  "terminal_menu": "my-menu"
+  "terminal_menu": "my-menu",
+  "resizable": false
 }

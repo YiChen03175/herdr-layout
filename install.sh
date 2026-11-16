@@ -7,8 +7,8 @@
 #   ./install.sh --plan        only say what would be added or replaced; change nothing
 #   ./install.sh --no-claude   leave Claude Code's settings alone
 #
-# Afterwards the Accounts & keys dialog (my-setup) opens: logins and API keys
-# are set there, never in this repo.
+# Afterwards the Customize dialog (my-setup) opens: logins and API keys are set
+# there, never in this repo. The look picked there (frosted glass) stays on.
 set -euo pipefail
 
 REPO="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
@@ -106,6 +106,16 @@ except BaseException:
 PY
 }
 
+# The look picked in Customize (data/my-setup/style.json: a patch for the layout's
+# root, e.g. frosted glass) goes back on the repo's layout before it's compared.
+styled_layout() { # styled_layout <out>
+  python3 "$REPO/mods/my-setup/style.py" apply "$REPO/layouts/${LAYOUT}.json" "$APP/data/my-setup/style.json" "$1"
+  # Herdr rewrites the layout in its own key order: the same layout stays as it is.
+  if [ -e "$APP/layouts/${LAYOUT}.json" ] && python3 -c 'import json, sys; sys.exit(json.load(open(sys.argv[1])) != json.load(open(sys.argv[2])))' "$1" "$APP/layouts/${LAYOUT}.json" 2>/dev/null; then
+    cp "$APP/layouts/${LAYOUT}.json" "$1"
+  fi
+}
+
 # --plan: what each piece would do here, nothing changed.
 if [ "$PLAN" = 1 ]; then
   state() { if [ ! -e "$2" ]; then echo "新增"; elif same "$1" "$2"; then echo "相同，不變"; else echo "取代（舊的先備份）"; fi; }
@@ -117,7 +127,9 @@ if [ "$PLAN" = 1 ]; then
     fi
     echo "  mod ${m}：${s}"
   done
-  echo "  layout ${LAYOUT}：$(state "$REPO/layouts/${LAYOUT}.json" "$APP/layouts/${LAYOUT}.json")"
+  PLAN_LAYOUT="$(mktemp)"; styled_layout "$PLAN_LAYOUT"
+  echo "  layout ${LAYOUT}：$(state "$PLAN_LAYOUT" "$APP/layouts/${LAYOUT}.json")"
+  rm -f "$PLAN_LAYOUT"
   for s in done blocked; do echo "  sound $s.mp3：$(state "$REPO/sounds/$s.mp3" "$APP/sounds/$s.mp3")"; done
   echo "  settings.json 的 sounds（只改這一項）：$(json_set "$APP/settings.json" sounds "$SOUNDS" || echo "讀不懂這個檔，不會改")"
   if claude_here; then
@@ -164,7 +176,8 @@ for m in "${MODS[@]}"; do
 done
 if [ -n "$changed" ]; then say "mods：${changed# }"; else say "mods：都已是這個版本，沒動"; fi
 
-put "$REPO/layouts/${LAYOUT}.json" "$APP/layouts/${LAYOUT}.json" "layouts/${LAYOUT}.json"
+styled_layout "$STAGE/${LAYOUT}.json"
+put "$STAGE/${LAYOUT}.json" "$APP/layouts/${LAYOUT}.json" "layouts/${LAYOUT}.json"
 say "layout：$LAYOUT"
 
 for s in done blocked; do put "$REPO/sounds/$s.mp3" "$APP/sounds/$s.mp3" "sounds/$s.mp3"; done
@@ -197,9 +210,9 @@ fi
 
 if [ -d "$BACKUP" ]; then echo "被取代的檔案備份在 $BACKUP"; fi
 
-# Logins and keys: the Accounts & keys dialog shows what's missing, one button each.
+# Logins and keys: the Customize dialog shows what's missing, one button each.
 if [ -x "$HA" ] && "$HA" do mod.open '{"name":"my-setup"}' >/dev/null 2>&1; then
-  say "已打開 Accounts & keys：照上面缺的項目登入或貼上 key（左下角的鑰匙也能再打開）"
+  say "已打開 Customize：照上面缺的項目登入或貼上 key（左下角的 Customize 也能再打開）"
 else
-  note "登入和 API key：開啟 Herdr 後點左下角的鑰匙（Accounts & keys）。"
+  note "登入和 API key：開啟 Herdr 後點左下角的 Customize。"
 fi
