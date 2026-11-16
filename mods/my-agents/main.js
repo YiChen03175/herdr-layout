@@ -38,6 +38,7 @@ const BOUNCE = { from: 0, to: -3.5, period: 700, easing: "ease-in-out" };
 // working: a slow fade in and out (2 s), like the tab bar's working tabs.
 const PULSE = { from: 0.35, to: 1, period: 2000, easing: "ease-in-out" };
 const IDLE_OPACITY = 0.55;
+const IDLE_GLASS = 0.85; // under frosted glass, where it's already lighter
 // Folding to the mini rail and back: titles collapse, icons glide, the rest fades.
 const SLIDE = { duration: 200, easing: "ease-out" };
 const FADE = { duration: 160, easing: "ease-out" };
@@ -1094,7 +1095,7 @@ export default class Agents extends View {
             .when(small, (el) => el.child(railSquare(t, 30, a.focused, this.hovered === a.address)
               .id(`ag-sq-${a.address}`).on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx))
               .on_click(focus)))
-            .child(div().id(`ag-pic-${a.address}`).opacity(op === 0 ? 0 : small && a.status === "idle" ? IDLE_OPACITY : 1).transition("opacity", op === 1 ? FADE : PIC_FADE)
+            .child(div().id(`ag-pic-${a.address}`).opacity(op === 0 ? 0 : small && a.status === "idle" ? (glassy() ? IDLE_GLASS : IDLE_OPACITY) : 1).transition("opacity", op === 1 ? FADE : PIC_FADE)
               .when(pulse, (el) => el.loop("opacity", PULSE))
               .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE))
                 .child(gif ? clawdPic(gif, 18) : icon(a.program, 18, t.foreground) ?? div().size(18))))

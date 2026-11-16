@@ -25,6 +25,12 @@ const METERS = [["fable", "Fable", "Fable 本週用量"], ["week", "週", "本�
 const BAR_W = 64;
 const BAR_H = 14;
 const TRACK = 0.5;   // the empty part
+// Under frosted glass the empty part is a veil over the glass, light on a dark theme and
+// dark on a light one: the dim grey above reads as a heavy block there.
+const GLASS_TRACK = { dark: "#ffffff33", light: "#0000001f" }; // the glass hover colours
+// and a hairline round it, so it still shows on a pale wallpaper.
+const GLASS_EDGE = { dark: "#ffffff1f", light: "#0000001a" };
+const darkUi = (t) => parseInt(t.foreground.slice(1, 3), 16) > 128;
 const PART = 0.35;   // Fable's part of the week: the fill under a veil of the background this thick
 const HOT = 90; // percent from which a bar turns the "needs you" colour
 // The percent sits at the end of its fill, in the background colour, so it reads
@@ -138,7 +144,9 @@ export default class WorkspaceStatus extends View {
     return h_flex().gap(6).items_center().flex_none().tooltip(tip)
       .child(div().child(label))
       .child(div().relative().w(BAR_W).h(BAR_H).rounded_full().overflow_hidden()
-        .child(div().absolute().inset_0().rounded_full().bg(t.dim).opacity(TRACK))
+        .child(layout()?.window_blur
+          ? div().absolute().inset_0().rounded_full().bg(GLASS_TRACK[darkUi(t) ? "dark" : "light"]).border_1().border_color(GLASS_EDGE[darkUi(t) ? "dark" : "light"])
+          : div().absolute().inset_0().rounded_full().bg(t.dim).opacity(TRACK))
         .child(fill(w.pct, hot ? t.blocked : t.accent))
         .when(part != null, el => el.child(fill(part, solid(t.background), PART)))
         .child(number(w.pct))

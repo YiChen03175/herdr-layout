@@ -27,6 +27,18 @@ import { exec, run, theme, layout, shared, setShared, props, openOverlay, closeO
 function card(el, t) {
   return el.bg(t.background.slice(0, 7)).rounded(10).overflow_hidden().border_1().border_color(t.border);
 }
+// The header matches the terminal pane's, which sits inside the terminal card's border
+// and padding (frosted glass only): its line at the same height (the layout's pane header
+// height below them: `height`, line included) and as far in from the sides (`side`).
+// (The panel card's own border doesn't push what's in it.)
+function headerBox() {
+  const walk = (n, id) => (n?.id === id ? n : (n?.children ?? []).map((c) => walk(c, id)).find(Boolean));
+  const root = layout(), card = walk(root, "main-card"), main = walk(root, "main");
+  const pad = card?.padding ?? 0, [v, h] = Array.isArray(pad) ? pad : [pad, pad], edge = card?.border?.width ?? 0;
+  return { height: edge + v + (main?.content?.pane?.header?.height ?? 26), side: edge + h };
+}
+// The header's line.
+const rule = (t) => div().h(1).flex_none().mx(headerBox().side).bg(t.border);
 // While the panel slides (my-tabs shares "panel.slide": {w}) its width changes every
 // frame: the content keeps its full width from the panel's left edge and is cut at the
 // right one, so it slides in and out rather than squeezing.
@@ -522,12 +534,14 @@ export default class Gitlab extends View {
     // Refresh: one button with how old the list is ("3m"), icon and age in one color.
     const icon = svg(this.loading ? "mods/workspace-chrome/spinner.svg" : ICON("refresh")).size(13);
     const age = this.fetchedAt && L ? ago(new Date(this.fetchedAt).toISOString()) : "";
-    const refresh = h_flex().id("gl-refresh").h(24).px(7).gap(5).flex_none().items_center().rounded(6).cursor_pointer()
+    const refresh = h_flex().id("gl-refresh").h(20).px(5).gap(4).flex_none().items_center().rounded(4).cursor_pointer()
       .text_size(12).text_color(t.dim).hover((s) => s.bg(t.hover).text_color(t.foreground))
       .on_click((_e, cx) => this.refresh(cx))
       .child(this.loading ? icon.spin(900) : icon)
       .when(Boolean(age), (el) => el.child(age));
-    const header = h_flex().h(42).flex_none().pl(14).pr(8).gap(8).items_center().border_b(1).border_color(t.border)
+    // As tall as the terminal pane's header, its line level with that one, and the same
+    // size of text and buttons.
+    const header = h_flex().h(headerBox().height - 1).flex_none().pl(14).pr(6).gap(8).items_center().text_size(12)
       .child(div().flex_1().min_w(0).truncate().font_semibold().child(this.org ?? "GitLab"))
       .child(refresh);
 
@@ -544,6 +558,6 @@ export default class Gitlab extends View {
         .child(this.section(t, "merged", "merge", "Merged", L.merged, (t, mr) => this.mergedRow(t, mr))));
 
     return card(v_flex().id("gitlab").size_full().min_h(0), t).text_color(t.foreground).text_size(13)
-      .child(header).child(body);
+      .child(header).child(rule(t)).child(body);
   }
 }

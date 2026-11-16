@@ -189,6 +189,9 @@ function tabIcon(c, program, color) {
 // Read: an agent tab you've seen since it finished (idle, not the shown tab) is a
 // little faded; one that finished unseen (done) stays at full strength.
 const READ = { dim: "a6", icon: 0.6 };
+// Under frosted glass the colours are already lighter on a see-through bar: fade less.
+const READ_GLASS = { dim: "e0", icon: 0.85 };
+const readLook = () => (glassy() ? READ_GLASS : READ);
 // The shown tab's border: its title color, a little softer (alpha bytes).
 const ACTIVE_BORDER = "bf";
 
@@ -421,7 +424,7 @@ export default class Tabs extends View {
     // A narrow bar (where Files and Changes go to icons) gives each title less room.
     // The last tab before +N can be squeezed to fill what's left of the strip.
     return div().id(`title-${c.id}`).max_w(this.squeeze?.id === c.id ? this.squeeze.title : this.titleMax()).truncate()
-      .text_color(read ? alpha(base, READ.dim) : base)
+      .text_color(read ? alpha(base, readLook().dim) : base)
       .child(text);
   }
 
@@ -574,7 +577,7 @@ export default class Tabs extends View {
           // The name shown here and the terminal to suggest from, for Rename and Close.
           props: { tab: "tab", target: { id: c.id, space: space.id, name, terminal: termOf(c) } } }); })
         .when(Boolean(program?.icon), el => el.child(tabIcon(c, program, c.active ? t.foreground : t.muted)
-          .when(read, el => el.opacity(READ.icon))))
+          .when(read, el => el.opacity(readLook().icon))))
         .child(this.title(c, c.zoomed ? `${name} Z` : name, read, t));
     };
     const root = layout(), w = window();

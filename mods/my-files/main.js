@@ -1,13 +1,25 @@
 // A lazy file browser for the focused pane's folder, with bounded read-only previews.
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, Editor, EditorState } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, shared } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, window, shared, layout } from "herdr";
 
 // The panel's look: a solid card of its own (frosted glass makes the theme background
 // see-through).
 function card(el, t) {
   return el.bg(t.background.slice(0, 7)).rounded(10).overflow_hidden().border_1().border_color(t.border);
 }
+// The header matches the terminal pane's, which sits inside the terminal card's border
+// and padding (frosted glass only): its line at the same height (the layout's pane header
+// height below them: `height`, line included) and as far in from the sides (`side`).
+// (The panel card's own border doesn't push what's in it.)
+function headerBox() {
+  const walk = (n, id) => (n?.id === id ? n : (n?.children ?? []).map((c) => walk(c, id)).find(Boolean));
+  const root = layout(), card = walk(root, "main-card"), main = walk(root, "main");
+  const pad = card?.padding ?? 0, [v, h] = Array.isArray(pad) ? pad : [pad, pad], edge = card?.border?.width ?? 0;
+  return { height: edge + v + (main?.content?.pane?.header?.height ?? 26), side: edge + h };
+}
+// The header's line.
+const rule = (t) => div().h(1).flex_none().mx(headerBox().side).bg(t.border);
 // While the panel slides (my-tabs shares "panel.slide": {w}) its width changes every
 // frame: the content keeps its full width from the panel's left edge and is cut at the
 // right one, so it slides in and out rather than squeezing.
@@ -192,10 +204,11 @@ export default class Files extends View {
     if (key() !== this.context?.key) this.refresh(cx);
     const t = theme();
     return pinned(card(v_flex().id("files").size_full().min_h(0), t).text_color(t.foreground).text_size(13)
-      .child(h_flex().h(42).flex_none().px(14).gap(8).items_center().border_b(1).border_color(t.border)
+      .child(h_flex().h(headerBox().height - 1).flex_none().px(14).gap(8).items_center().text_size(12)
         .when(Boolean(this.file), el => el.child(div().id("files-back").w(20).cursor_pointer().text_color(t.muted).on_click((_e, cx) => { this.show(null); cx.notify(); }).child("←")))
         .child(div().font_semibold().child("Files"))
         .child(div().flex_1().min_w(0).truncate().text_right().text_size(12).text_color(t.dim).child(this.file ?? this.root?.split(/[\\/]/).pop() ?? "")))
+      .child(rule(t))
       .when(!this.file, el => el.child(v_flex().id("files-tree").flex_1().min_h(0).overflow_y_scrollbar().p(6).children(this.rows("", 0, [], t))
         .when(Boolean(this.error) || !this.entries.get("")?.length, el => el.child(div().p(8).text_size(12).text_color(t.dim).child(this.error || (this.loading ? "Loading files…" : this.root ? "No files" : "No folder"))))
         .when(this.limited, el => el.child(div().p(8).text_size(11).text_color(t.dim).child("File list limited to 500 entries per folder and 5,000 total")))))
