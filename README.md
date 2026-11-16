@@ -49,7 +49,7 @@
 **Pane 與底部狀態列（`my-pane`、`my-status`）**
 - Pane 標題列比較安靜：只有資料夾和 agent 狀態，加上 split、zoom、close 按鈕，高 26px。
 - 主畫面上下不留外框空白，只保留左右 4px。
-- 底部狀態列顯示機器、目前焦點終端機的分支（有未 commit 的改動會加 `*`）、在 linked worktree 裡時的 worktree 名稱，以及 agent 數量（幾個需要你）；右邊是 Claude 方案用量的 bar，百分比寫在 bar 裡：**Fable 本週**、**本週（全部模型）**、**5 小時**（沒有資料的不顯示）。跟 claude.ai 一樣，本週的 bar 前段用 Fable 的顏色標出 Fable 用掉的部分。滑上去會顯示重置時間和 Fable 的上限，90% 以上變紅。Herdr 在前景時每 5 分鐘更新一次。
+- 底部狀態列顯示機器、目前焦點終端機的分支（有未 commit 的改動會加 `*`）、在 linked worktree 裡時的 worktree 名稱，以及 agent 數量（幾個需要你）；右邊是 Claude 方案用量的 bar：**Fable 本週**、**本週（全部模型）**、**5 小時**（沒有資料的不顯示）。百分比跟著實心段的末端，寫在實心段裡；實心段最短是一個正圓（0% 也是），也至少放得下數字。跟 claude.ai 一樣，本週的 bar 前段用稍淡的顏色標出 Fable 用掉的部分，兩段末端隔得夠開、數字不會重疊時，也標出 Fable 的百分比。滑上去會顯示重置時間和 Fable 的上限，90% 以上變紅。Herdr 在前景時每 5 分鐘更新一次。
 
 **Claude Code 的 status line（`claude/statusline-command.sh`）**
 - 左邊是資料夾和 GitHub repo，右邊貼齊是 **模型@思考程度** 和 **ctx 剩餘 %**（依剩餘量變綠／黃／紅）。

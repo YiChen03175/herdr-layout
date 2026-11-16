@@ -24,11 +24,15 @@ const USAGE_CHECK = 30000;
 const METERS = [["fable", "Fable", "Fable 本週用量"], ["week", "週", "本週用量（全部模型）"], ["five_hour", "5h", "5 小時用量"]];
 const BAR_W = 64;
 const BAR_H = 14;
-const DIGIT_W = 5.6; // about how wide one digit of the percent is
 const TRACK = 0.5;   // the empty part
-const SOFT = 0.6;    // every other fill (the week's, 5h)
-const BRIGHT = 1;    // Fable, alone and as its part of the week
+const PART = 0.35;   // Fable's part of the week: the fill under a veil of the background this thick
 const HOT = 90; // percent from which a bar turns the "needs you" colour
+// The percent sits at the end of its fill, in the background colour, so it reads
+// the same everywhere. A fill is never shorter than a circle, nor than its number.
+const NUM_SIZE = 9.5;
+const DIGIT_W = 5.6; // one digit at NUM_SIZE, semibold (layout px)
+const NUM_PAD = 4;   // from the number to its fill's end
+const NUM_GAP = 3;   // the least room between the week's two numbers
 
 const pad = (n) => String(n).padStart(2, "0");
 const when = (ts) => {
@@ -110,34 +114,33 @@ export default class WorkspaceStatus extends View {
     });
   }
 
-  // A pill with the percent inside; a window without data isn't shown. As on
-  // claude.ai, the week's fill starts with Fable's part of it, in Fable's colour.
+  // A pill whose fill carries its percent at its end; a window without data isn't
+  // shown. As on claude.ai, the week's fill starts with Fable's part of it, a little
+  // paler, with Fable's percent too once the two numbers can't touch.
   meter(t, [key, label, name]) {
     const w = this.usage?.[key];
-    const width = (p) => Math.max(BAR_H, BAR_W * Math.max(0, Math.min(100, p)) / 100);
+    const text = (p) => String(Math.round(p));
+    const textW = (p) => text(p).length * DIGIT_W;
+    const reach = (p) => Math.min(BAR_W, Math.max(BAR_H, textW(p) + 2 * NUM_PAD, BAR_W * Math.max(0, Math.min(100, p)) / 100));
     const hot = w.pct >= HOT;
     const part = key === "week" && w.fable > 0 ? w.fable : null;
     const tip = `${name} ${Math.round(w.pct)}%`
       + (part != null ? `（Fable 佔 ${Math.round(part)}%）` : "")
       + (w.cap != null ? `，最多可用每週上限的 ${w.cap}%` : "")
       + (w.resets ? `，${when(w.resets)} 重置` : "");
-    const fill = (p, color, alpha) => div().absolute().top(0).left(0).h_full().w(width(p)).rounded_full().bg(color).opacity(alpha);
-    // The percent sits at the end of the fill: inside it (in the background colour)
-    // when the fill is wide enough, else just past it.
-    const text = `${Math.round(w.pct)}`;
-    const end = w.pct > 0 ? width(w.pct) : 0;
-    // A fill at its smallest is a circle: the number goes past it.
-    const inside = end > BAR_H && end >= text.length * DIGIT_W + 8;
-    const number = inside
-      ? h_flex().absolute().top(0).left(0).w(end).h_full().items_center().justify_end().pr(4).text_color(t.background)
-      : h_flex().absolute().top(0).left(end + 3).h_full().items_center().text_color(t.foreground);
+    const fill = (p, color, alpha = 1) => div().absolute().top(0).left(0).h_full().w(reach(p)).rounded_full().bg(color).opacity(alpha);
+    const number = (p) => h_flex().absolute().top(0).left(0).h_full().w(reach(p)).items_center().justify_end().pr(NUM_PAD)
+      .text_size(NUM_SIZE).font_weight(600).text_color(t.background).child(text(p));
+    // Fable's number ends left of the week's, with room between them.
+    const both = part != null && reach(part) + NUM_GAP <= reach(w.pct) - textW(w.pct);
     return h_flex().gap(6).items_center().flex_none().tooltip(tip)
       .child(div().child(label))
       .child(div().relative().w(BAR_W).h(BAR_H).rounded_full().overflow_hidden()
         .child(div().absolute().inset_0().rounded_full().bg(t.dim).opacity(TRACK))
-        .when(w.pct > 0, el => el.child(fill(w.pct, hot ? t.blocked : t.accent, key === "fable" ? BRIGHT : SOFT)))
-        .when(part != null, el => el.child(fill(part, t.accent, BRIGHT)))
-        .child(number.text_size(9.5).font_weight(600).child(text)));
+        .child(fill(w.pct, hot ? t.blocked : t.accent))
+        .when(part != null, el => el.child(fill(part, t.background, PART)))
+        .child(number(w.pct))
+        .when(both, el => el.child(number(part))));
   }
 
   render() {
