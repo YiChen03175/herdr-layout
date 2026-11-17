@@ -168,7 +168,7 @@ export default class WorkspaceStatus extends View {
     const label = (icon, text) => h_flex().gap(6).items_center().min_w(0).child(svg(`mods/my-status/${icon}.svg`).size(13).flex_none()).child(div().truncate().child(text));
     // Under frosted glass (Customize) the work card's edge parts it from the bar: no line.
     return h_flex().size_full().px(14).gap(16).items_center().bg(t.chrome).when(!layout()?.window_blur, el => el.border_t(1).border_color(t.border)).text_size(11.8).text_color(t.muted)
-      .child(label(space?.machine ? "server" : "monitor", space?.machine ?? "This computer"))
+      .child(label(space?.machine ? "remote" : "monitor", space?.machine ?? "This computer"))
       .when(Boolean(branch), el => el.child(label("branch", `${branch}${g?.dirty ? "*" : ""}`)))
       .when(Boolean(g?.worktree), el => el.child(label("git-compare", `worktree ${g.worktree}`)))
       .child(h_flex().flex_none().gap(6).items_center().child(div().size(6).rounded(3).bg(t.dim)).child(`${list.length} agents`)

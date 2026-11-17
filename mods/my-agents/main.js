@@ -77,7 +77,7 @@ const selectedBg = (t) => {
 // its edges. gpui has no inset shadow, so it's four faint rings 0.4 px apart: the edge
 // is under all four, each step in under one fewer, so it fades out over 1.6 px. On the
 // see-through window their opacities add up (gpui sums alpha there): each ring is
-// barely there, the edge about 3% darker than the well.
+// barely there, the edge under 2% darker than the well.
 // Hover is a faint lift. Off, rows look as before.
 let glassAt = 0, glassNow = false;
 const glassy = () => {
@@ -91,8 +91,8 @@ const darkUi = (t) => parseInt(t.foreground.slice(1, 3), 16) > 128;
 // Its edge as macOS draws a menu's: a dark hairline outside (edge) parting it from the
 // glass, a faint light one just inside (sheen) as the glass's rim.
 const GLASS_PICK = {
-  dark: { fill: "#0000001f", ring: "#00000002", hover: "#ffffff33", card: "#2a2c32", tag: "#ffffff17", edge: "#00000099", sheen: "#ffffff1a" },
-  light: { fill: "#00000014", ring: "#00000002", hover: "#0000001f", card: "#f6f6f8", tag: "#0000000f", edge: "#00000029", sheen: "#ffffffcc" },
+  dark: { fill: "#0000001f", ring: "#00000001", hoverFill: "#00000010", card: "#2a2c32", tag: "#ffffff17", edge: "#00000099", sheen: "#ffffff1a" },
+  light: { fill: "#00000014", ring: "#00000001", hoverFill: "#0000000a", card: "#f6f6f8", tag: "#0000000f", edge: "#00000029", sheen: "#ffffffcc" },
 };
 const cardBg = (t) => (glassy() ? glassPick(t).card : t.popover);
 const cardEdge = (t) => (glassy() ? glassPick(t).edge : t.border);
@@ -109,14 +109,23 @@ const glassSelected = (el, t, r, b = 0) => {
   const edge = (w, c) => div().absolute().top(-b).left(-b).right(-b).bottom(-b).rounded(r).border(w).border_color(c);
   return el.bg(p.fill).children(GLASS_RINGS.map((w) => edge(w, p.ring)));
 };
-const glassHover = (s, t) => s.bg(glassPick(t).hover);
+// Hover under frosted glass: the selected well, lighter: a fainter fill, and only the
+// two outer rings (its shadow half as deep and as wide). now: hovered as drawn (the
+// caller tracks it); else each part takes its color only while the pointer is over it.
+const HOVER_RINGS = [0.4, 0.8];
+const glassHovered = (el, t, r, b = 0, now = false) => {
+  const p = glassPick(t);
+  const edge = (w) => div().absolute().top(-b).left(-b).right(-b).bottom(-b).rounded(r).border(w)
+    .border_color(now ? p.ring : "#00000000").when(!now, (e) => e.hover((s) => s.border_color(p.ring)));
+  return (now ? el.bg(p.hoverFill) : el.hover((s) => s.bg(p.hoverFill))).children(HOVER_RINGS.map(edge));
+};
 
 // On the mini rail: a square as tall as the row, centered on its 18 px icon,
 // in the row's selected or hover color (nothing otherwise).
 const railSquare = (t, rowH, selected, hovered) => {
   const inset = (rowH - 18) / 2;
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
-    .when(selected || hovered, (el) => (glassy() ? (selected ? glassSelected(el, t, 8) : glassHover(el, t)) : el.bg(selected ? selectedBg(t) : t.hover)));
+    .when(selected || hovered, (el) => (glassy() ? (selected ? glassSelected(el, t, 8) : glassHovered(el, t, 8, 0, true)) : el.bg(selected ? selectedBg(t) : t.hover)));
 };
 // How often agents' states are compared (in-process, cheap): the corner note
 // Herdr puts up shows until the next look closes it, so look often.
@@ -148,6 +157,10 @@ const CARD_LINE_H = 12.5 * 1.5; // one line of a card's text
 const ARCHIVE_AFTER = 6 * 3600000;
 // Standby shows its newest few; a button above them unfolds the rest, under the button.
 const ARCHIVE_SHOWN = 3;
+// The pinned agents sit at the top, a divider under them this tall.
+const PIN_LINE_H = 16;
+// An agent on another machine (its address `vps/t7`): which one, else null.
+const machineOf = (a) => (a.address.includes("/") ? a.address.split("/")[0] : null);
 const ROW_H = 30 + ROW_GAP, SUB_H = 26; // a row with its half gaps; a sub-agent row
 // Popups from the sidebar (the + menu, a recap) open just clear of its edge, their
 // top a little above where the pointer is, so the first line reads level with it.
@@ -234,7 +247,10 @@ const clawdPic = (name, size) => {
   const src = window().active
     ? `mods/my-agents/clawd-${name}.gif`
     : `mods/my-agents/clawd-${name}/${pad2(Math.floor(Date.now() / c.ms) % c.frames)}.png`;
-  return image(src).w(size + 4).h(size + 4).m(-2).flex_none();
+  // Drawn 2 px bigger all round, in a box the icon's size: a negative margin instead moved
+  // the box, and the selected square round it, 2 px up, its top edge then cut off.
+  return div().relative().size(size).flex_none()
+    .child(image(src).absolute().top(-2).left(-2).w(size + 4).h(size + 4));
 };
 
 // The agent's icon from the app's program table: a one-color glyph or a picture.
@@ -618,6 +634,13 @@ export default class Agents extends View {
       .child(div().size(4.5).rounded_full().bg(t.foreground));
   }
 
+  // An agent on another machine (machineOf): a cloud on its icon's bottom left corner,
+  // as the remote mark elsewhere (my-tabs, my-spaces), solid here, small as it is, and
+  // see-through.
+  remoteMark(t) {
+    return svg("mods/my-agents/cloud-solid.svg").absolute().left(-2.5).bottom(-3.5).size(8).text_color(t.foreground).opacity(0.6);
+  }
+
   // The first row: a new tab (a terminal or an agent), as the tab bar's + did.
   // small: the mini rail; dx: how far its icon glides to the middle (railShift).
   newRow(t, collapsed, small, dx) {
@@ -981,15 +1004,19 @@ export default class Agents extends View {
     const rankOf = (a) => urgency.get(a.address);
     if (byPriority) list = [...list].sort((x, y) => rankOf(y) - rankOf(x) || this.since(y) - this.since(x) || y.seq - x.seq);
     // Standby ("archived" inside): by hand (until the state next changes), or idle 6 hours. Pinned never.
+    // The one you're on doesn't drop there under you, but looking at one already there
+    // doesn't take it out: only its state changing does (you typing to it).
     const marks = shared("agents.archived") ?? {};
+    const was = this.standby ?? new Set();
     const isArchived = (a) => {
       if (a.pinned) return false;
       const m = marks[a.address];
       if (m && this.since(a) <= m.at) return m.on;
       if (a.shell) return true;
-      return !a.focused && a.status === "idle" && now - this.since(a) >= ARCHIVE_AFTER;
+      return a.status === "idle" && now - this.since(a) >= ARCHIVE_AFTER && (!a.focused || was.has(a.address));
     };
     const archivedSet = new Set(list.filter(isArchived).map((a) => a.address));
+    this.standby = archivedSet;
     // Not archived, in list order (pinned ones among them).
     const live = list.filter((a) => !archivedSet.has(a.address));
     const pinned = live.filter((a) => a.pinned);
@@ -1086,7 +1113,8 @@ export default class Agents extends View {
           // around the icon instead, which glides with it.
           .when(!small, (el) => el.overflow_hidden()
             .when(a.focused, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(selectedBg(t))))
-            .hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover)))
+            .when(glassy() && !a.focused, (el) => glassHovered(el.relative(), t, 8))
+            .when(!glassy(), (el) => el.hover((s) => s.bg(t.hover)))
             .on_hover((on, cx) => this.hoverRecap(a, on, cx)).on_mouse_move((e, cx) => this.trackHover(a, e, cx)))
           // On the mini rail only the square you can see is clickable (below).
           .when(!small, (el) => el.on_click(focus))
@@ -1099,14 +1127,15 @@ export default class Agents extends View {
               .when(pulse, (el) => el.loop("opacity", PULSE))
               .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE))
                 .child(gif ? clawdPic(gif, 18) : icon(a.program, 18, t.foreground) ?? div().size(18))))
-            .child(this.recapDot(t, a, small)))
+            .child(this.recapDot(t, a, small))
+            .when(Boolean(machineOf(a)), (el) => el.child(this.remoteMark(t))))
           .child(div().id(`ag-name-${a.address}`).flex_1().min_w(0).truncate().text_color(a.status === "idle" && !a.focused ? t.muted : t.foreground)
             .opacity(small ? 0 : 1).transition("opacity", FADE)
             .when(named(), (el) => el.child(name))), full, place(a)));
       }
       const pic = gif ? clawdPic(gif, 16) : icon(a.program, 16, t.foreground);
       // An agent on another machine (`vps/t7`) says which.
-      const machine = a.address.includes("/") ? a.address.split("/")[0] : null;
+      const machine = machineOf(a);
       const when = this.since(a);
       const idle = a.status === "idle" && !a.focused;
       const isPinned = a.pinned;
@@ -1136,7 +1165,8 @@ export default class Agents extends View {
         .items_center()
         .gap(9)
         .when(a.focused, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(selectedBg(t))))
-        .hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover)))
+        .when(glassy() && !a.focused, (el) => glassHovered(el.relative(), t, 8))
+        .when(!glassy(), (el) => el.hover((s) => s.bg(t.hover)))
         .on_hover((on, cx) => this.hoverRecap(a, on, cx))
         .on_mouse_move((e, cx) => this.trackHover(a, e, cx))
         .on_click(focus)
@@ -1148,7 +1178,8 @@ export default class Agents extends View {
           })).relative().child(div().id(`ag-picf-${a.address}`).opacity(op).transition("opacity", PIC_FADE)
             .child(div().when(pulse, (el) => el.loop("opacity", PULSE))
               .child(div().when(hop, (el) => el.relative().loop("top", BOUNCE)).child(pic))))
-          .child(this.recapDot(t, a, false))))
+          .child(this.recapDot(t, a, false))
+          .when(Boolean(machine), (el) => el.child(this.remoteMark(t)))))
         .child(h_flex().flex_1().min_w(0).gap(5).items_center()
           .child(div().min_w(0).max_w(200).truncate().text_color(idle ? t.muted : t.foreground).child(name)))
         .when(Boolean(machine), el => el.child(div().text_size(10).text_color(t.dim).child(machine)))
@@ -1214,7 +1245,7 @@ export default class Agents extends View {
     // The list from the top, for moves(): the pinned area, then each group.
     this.moves([
       ...live.map((a) => [`ps-${a.address}`, slotH(a, a.pinned), true]),
-      ["pin-line", pinned.length ? 14 : 0, true],
+      ["pin-line", pinned.length ? PIN_LINE_H : 0, true],
       ...groups.flatMap((g) => [...(g.members.length ? [[`agh-${g.id}`, titleH, collapsed]] : []),
         ...(shownIn(g) ? g.all.map((a) => [`gs-${a.address}`, slotH(a, !a.pinned), true]) : [])]),
     ], cx);
@@ -1226,16 +1257,15 @@ export default class Agents extends View {
     };
     const rows = groups.flatMap((g) => [...(g.members.length ? [this.moved(`agh-${g.id}`, foldAway(`agh-${g.id}`, 30, header(g)))] : []),
       ...(shownIn(g) ? g.all.map((a) => slot(`gs-${a.address}`, !a.pinned, a)) : [])]);
-    const pinInk = settings().dark === false ? t.foreground : "#ffffff";
-    // The pinned area: at the top, a line under it. The + row ends the list (above Standby).
+    // The pinned area: the pinned agents at the top, a divider under them: a line in from
+    // each side of the sidebar (as the machines' in the spaces list, my-spaces), "pin"
+    // between them, apart from both. It folds away when nothing is pinned.
+    // The + row ends the list (above Standby).
+    const pinLine = () => div().h(1).flex_1().min_w(0).bg(t.border);
     const pinRows = [...live.map((a) => slot(`ps-${a.address}`, a.pinned, a)),
-      // The line under it, with a small solid pin in its middle (white, see-through).
-      this.moved("pin-line", div().id("pin-line")).flex_none().mx(-8).px(small ? 9 : 20).overflow_hidden().h(pinned.length ? 14 : 0).transition("height", SLIDE)
-        // Line and pin share one color; on the mini rail the line reaches into the list's padding.
-        .child(h_flex().h(14).gap(1).items_center().opacity(0.2)
-          .child(div().flex_1().h(1).rounded_full().bg(pinInk))
-          .child(svg("mods/my-agents/pin-solid.svg").size(7).flex_none().text_color(pinInk))
-          .child(div().flex_1().h(1).rounded_full().bg(pinInk)))];
+      this.moved("pin-line", div().id("pin-line")).flex_none().mx(-8).px(4).overflow_hidden().h(pinned.length ? PIN_LINE_H : 0).transition("height", SLIDE)
+        .child(h_flex().h(PIN_LINE_H).gap(4).items_center().text_size(9).text_color(t.dim)
+          .child(pinLine()).child(div().flex_none().child("pin")).child(pinLine()))];
 
     const archive = { id: "archived", label: "Standby", status: null, members: old };
     const byAge = [...old].sort((x, y) => this.since(x) - this.since(y));

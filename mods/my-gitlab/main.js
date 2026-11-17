@@ -23,9 +23,11 @@ import { v_flex, h_flex } from "gpui-base";
 import { exec, run, theme, layout, shared, setShared, props, openOverlay, closeOverlay, appHome } from "herdr";
 
 // The panel's look: a solid card of its own (frosted glass makes the theme background
-// see-through).
+// see-through), outlined as the terminal's card is (none under frosted glass).
 function card(el, t) {
-  return el.bg(t.background.slice(0, 7)).rounded(10).overflow_hidden().border_1().border_color(t.border);
+  const walk = (n) => (n?.id === "main-card" ? n : (n?.children ?? []).map(walk).find(Boolean));
+  const edge = walk(layout())?.border?.color;
+  return el.bg(t.background.slice(0, 7)).rounded(10).overflow_hidden().border_1().border_color(edge ? t[edge] ?? edge : t.border);
 }
 // The header matches the terminal pane's, which sits inside the terminal card's border
 // and padding (frosted glass only): its line at the same height (the layout's pane header

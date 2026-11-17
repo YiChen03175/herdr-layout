@@ -29,7 +29,7 @@ const RAIL_EDGE = 5;
 // its edges. gpui has no inset shadow, so it's four faint rings 0.4 px apart: the edge
 // is under all four, each step in under one fewer, so it fades out over 1.6 px. On the
 // see-through window their opacities add up (gpui sums alpha there): each ring is
-// barely there, the edge about 3% darker than the well.
+// barely there, the edge under 2% darker than the well.
 // Hover is a faint lift. Off, rows look as before.
 let glassAt = 0, glassNow = false;
 const glassy = () => {
@@ -38,8 +38,8 @@ const glassy = () => {
 };
 const darkUi = (t) => parseInt(t.foreground.slice(1, 3), 16) > 128;
 const GLASS_PICK = {
-  dark: { fill: "#0000001f", ring: "#00000002", hover: "#ffffff33" },
-  light: { fill: "#00000014", ring: "#00000002", hover: "#0000001f" },
+  dark: { fill: "#0000001f", ring: "#00000001", hoverFill: "#00000010" },
+  light: { fill: "#00000014", ring: "#00000001", hoverFill: "#0000000a" },
 };
 const GLASS_RINGS = [0.4, 0.8, 1.2, 1.6];
 const glassPick = (t) => GLASS_PICK[darkUi(t) ? "dark" : "light"];
@@ -50,14 +50,24 @@ const glassSelected = (el, t, r, b = 0) => {
   const edge = (w, c) => div().absolute().top(-b).left(-b).right(-b).bottom(-b).rounded(r).border(w).border_color(c);
   return el.bg(p.fill).children(GLASS_RINGS.map((w) => edge(w, p.ring)));
 };
-const glassHover = (s, t) => s.bg(glassPick(t).hover);
+// Hover under frosted glass: the selected well, lighter: a fainter fill, and only the
+// two outer rings (its shadow half as deep and as wide). now: hovered as drawn (the
+// caller tracks it); else each part takes its color only while the pointer is over it.
+// also: more of the element's hover look (another .hover() would replace this one's).
+const HOVER_RINGS = [0.4, 0.8];
+const glassHovered = (el, t, r, b = 0, now = false, also = (s) => s) => {
+  const p = glassPick(t);
+  const edge = (w) => div().absolute().top(-b).left(-b).right(-b).bottom(-b).rounded(r).border(w)
+    .border_color(now ? p.ring : "#00000000").when(!now, (e) => e.hover((s) => s.border_color(p.ring)));
+  return (now ? el.bg(p.hoverFill) : el.hover((s) => also(s.bg(p.hoverFill)))).children(HOVER_RINGS.map(edge));
+};
 
 // On the mini rail: a square as tall as the row, centered on its 18 px icon,
 // in the row's selected or hover color (nothing otherwise).
 const railSquare = (t, rowH, selected, hovered) => {
   const inset = (rowH - 18) / 2;
   return div().absolute().top(-inset).left(-inset).size(rowH).rounded(8)
-    .when(selected || hovered, (el) => (glassy() ? (selected ? glassSelected(el, t, 8) : glassHover(el, t)) : el.bg(selected ? t.selected : t.hover)));
+    .when(selected || hovered, (el) => (glassy() ? (selected ? glassSelected(el, t, 8) : glassHovered(el, t, 8, 0, true)) : el.bg(selected ? t.selected : t.hover)));
 };
 // An avatar's letter. A space someone named shows its name's; an unnamed one
 // (named after where its first terminal is, so it changes with every cd) keeps
@@ -75,6 +85,9 @@ function place(s, ps) {
   return ps.find((p) => tabs.has(p.tab) && p.cwd)?.cwd || s.folder;
 }
 const rowHeight = ({ tree }) => (tree ? 28 : 30);
+// How far a rail row's avatar slides from its spot (8 in from the row's side): on the mini
+// rail, to the middle.
+const railDx = (rail) => (rail.small ? (rail.width - 16 - 18) / 2 - 8 : 0);
 const where = (s, ps) => JSON.stringify([s.machine ?? null, place(s, ps)]);
 // A localStorage value, or `fallback` when it's missing or unreadable.
 function stored(key, fallback) {
@@ -404,7 +417,9 @@ export default class Spaces extends View {
       return layout === "loading" || (!layout && this.machines.some(k => k.name === m && k.state === "connected"))
         || sp.some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
-    const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
+    // On the rail the dots sit where an avatar would.
+    const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).flex().items_center().text_size(12).text_color(t.dim)
+      .child(collapsed ? div().w(18).relative().left(railDx(rail)).transition("left", SLIDE).flex().justify_center().child("…") : "Loading…");
     if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
     const machineNames = [null, ...remote];
     return machineNames.flatMap((m) => {
@@ -414,16 +429,22 @@ export default class Spaces extends View {
       const connected = !m || machine?.state === "connected";
       const rebuilt = this.rebuilt(machine) || !!repair;
       const folded = this.folded.has(m);
-      const head = h_flex().id(`machine-${m ?? "local"}`).h(26).flex_none().px(collapsed ? 2 : 8).gap(7).items_center().text_size(11).text_color(t.dim)
-        .hover(s => s.bg(t.hover))
-        .on_click((_e, cx) => {
-          folded ? this.folded.delete(m) : this.folded.add(m);
-          localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
-          cx.notify();
-        })
-        .child(svg(`mods/my-spaces/${m ? "server" : "monitor"}.svg`).size(13).flex_none())
-        .when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? "This computer"))
-          .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
+      const toggle = (_e, cx) => {
+        folded ? this.folded.delete(m) : this.folded.add(m);
+        localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
+        cx.notify();
+      };
+      // A remote machine's state, as a dot: connected, needing a reconnect, or away.
+      const state = !m ? null : connected ? t.ansi2 : rebuilt ? t.blocked : t.dim;
+      const stateWord = !m ? "" : connected ? "connected" : rebuilt ? "rebuilt · click Connect in the full sidebar" : (machine?.state ?? "asleep").replace(/_/g, " ");
+      const head = collapsed
+        ? this.railHead(m, { state, stateWord, folded, count: mine.length }, t, rail, toggle)
+        : h_flex().id(`machine-${m ?? "local"}`).h(26).flex_none().px(8).gap(7).items_center().rounded(7).text_size(11).text_color(t.dim)
+          .when(glassy(), el => glassHovered(el.relative(), t, 7)).when(!glassy(), el => el.hover(s => s.bg(t.hover)))
+          .on_click(toggle)
+          .child(svg(`mods/my-spaces/${m ? "remote" : "monitor"}.svg`).size(13).flex_none())
+          .child(div().flex_1().truncate().child(m ?? "This computer"))
+          .when(!connected && !rebuilt, el => el.child(div().flex_none().child(stateWord)))
           .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
             .child(div().max_w(140).truncate().child(repair?.error || "rebuilt ·"))
             .child(div().id(`machine-connect-${m}`).text_color(repair?.error ? t.blocked : t.muted)
@@ -431,17 +452,54 @@ export default class Spaces extends View {
               .tooltip(repair?.error || "This machine was rebuilt or replaced. Click to connect to the new one.")
               .on_click((_e, cx) => { cx.stop_propagation(); this.reconnect(machine, cx); })
               .child(repair?.busy ? "Connecting…" : "Connect"))))
-          .when(connected, el => el.child(div().id(`machine-add-${m ?? "local"}`).flex_none().px(4).rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground))
-            .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); }).child("+")))
-          .child(div().size(6).rounded(3).flex_none().bg(connected ? t.ansi2 : t.dim))
-          .child(svg(`mods/my-spaces/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
-      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().px(8).gap(7).items_center().rounded(7)
-        .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
-        .on_click(() => run("space.new", { machine: m ?? "" }))
-        .child(svg("mods/my-spaces/plus-12.svg").size(12)).when(!collapsed, el => el.child("New space there"));
+          .when(connected, el => el.child(h_flex().id(`machine-add-${m ?? "local"}`).size(20).flex_none().items_center().justify_center().rounded(5)
+            .when(glassy(), el => glassHovered(el.relative(), t, 5, 0, false, s => s.text_color(t.foreground)))
+            .when(!glassy(), el => el.hover(s => s.bg(t.hover).text_color(t.foreground))).tooltip(`New space on ${m ?? "this computer"}`)
+            .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); })
+            .child(svg("mods/my-spaces/plus-12.svg").size(11))))
+          .when(Boolean(state), el => el.child(div().size(6).rounded(3).flex_none().bg(state)))
+          .child(svg(`mods/my-spaces/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none());
+      // On the rail a machine without spaces is just its line: a new one there is the
+      // full sidebar's (the + in the machine's header).
+      const empty = collapsed ? null
+        : h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().px(8).gap(7).items_center().rounded(7)
+          .text_size(12).text_color(t.dim)
+          .when(glassy(), el => glassHovered(el.relative(), t, 7, 0, false, s => s.text_color(t.foreground)))
+          .when(!glassy(), el => el.hover(s => s.bg(t.hover).text_color(t.foreground)))
+          .on_click(() => run("space.new", { machine: m ?? "" }))
+          .child(svg("mods/my-spaces/plus-12.svg").size(12)).child("New space there");
       if (!collapsed && rebuilt) return [head];
-      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];
+      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : loading(m) ? [loadingRow(m)] : empty ? [empty] : [])];
     });
+  }
+
+  // A machine's header on the rail: a section line with the machine's icon on it, the
+  // icon level with the avatars below (gliding with them as the rail narrows), the line
+  // reaching to the sidebar's sides; its name after the icon where rows show names. A
+  // remote machine's state is a dot on the icon's corner. Folded over more than one
+  // space, how many is a badge on the other corner. Name and state in a tooltip; a click folds
+  // or unfolds.
+  railHead(m, { state, stateWord, folded, count }, t, rail, toggle) {
+    const dx = railDx(rail);
+    const ink = t.border;
+    const name = m ?? "This computer";
+    return h_flex().id(`machine-${m ?? "local"}`).mx(-8).px(4).h(22).flex_none().gap(3).items_center()
+      .text_size(10.5).text_color(t.dim).hover(s => s.text_color(t.foreground)).cursor_pointer()
+      .tooltip(`${name}${stateWord ? ` · ${stateWord}` : ""} · click to ${folded ? "unfold" : "fold"}`)
+      .on_click(toggle)
+      // From the side to the icon: the icon's 14 px box centers on the avatars' center.
+      .child(div().h(1).flex_none().w(Math.max(0, 11 + dx)).bg(ink).transition("width", SLIDE))
+      .child(div().relative().size(14).flex_none().flex().items_center().justify_center()
+        .child(svg(`mods/my-spaces/${m ? "remote" : "monitor"}.svg`).size(12))
+        .when(Boolean(state), el => el.child(div().absolute().right(-3).bottom(-2).size(5).rounded_full().bg(state)))
+        // Folded over more than one space: how many, as a notification badge on the corner
+        // (the accent, as GitLab's count in the tab bar). Inside the list's top edge,
+        // which would cut it.
+        .when(folded && count > 1, el => el.child(h_flex().absolute().top(-3).left(9).h(9).min_w(9).px(count > 9 ? 2 : 0)
+          .rounded_full().bg(t.accent).items_center().justify_center()
+          .text_size(7).font_bold().text_color(t.background.slice(0, 7)).child(count > 99 ? "99+" : String(count)))))
+      .when(!rail.small && rail.named, el => el.child(div().flex_none().max_w(rail.width - 60).truncate().child(name)))
+      .child(div().h(1).flex_1().min_w(0).bg(ink));
   }
 
   // Only what's unusual, after the name: "herdr \u00b7 spike \u21912 \u21931". The repo or
@@ -485,7 +543,7 @@ export default class Spaces extends View {
       .justify_center()
       .rounded(8)
       .when(on, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(t.selected)))
-      .when(!on, (el) => el.hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover))))
+      .when(!on, (el) => (glassy() ? glassHovered(el.relative(), t, 8) : el.hover((s) => s.bg(t.hover))))
       .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
       .when(this.pressed !== null && this.over === w.id && this.pressed !== w.id, (el) => el.child(
         div().absolute().left(0).right(0).h(2).bg(t.accent)
@@ -534,7 +592,7 @@ export default class Spaces extends View {
   compact({ w, tree }, t, rail) {
     const { small } = rail;
     // On the mini rail the avatar glides to the middle and the rest fades out.
-    const dx = small ? (rail.width - 16 - 18) / 2 - 8 : 0;
+    const dx = railDx(rail);
     const hover = (on, cx) => {
       if (on) this.hoverSpace = w.id;
       else if (this.hoverSpace === w.id) this.hoverSpace = null;
@@ -554,7 +612,7 @@ export default class Spaces extends View {
       // around the avatar instead (below), which glides with it.
       .when(!small, (el) => el.overflow_hidden()
         .when(w.active, (el) => (glassy() ? glassSelected(el.relative(), t, 8) : el.bg(t.selected)))
-        .when(!w.active, (el) => el.hover((s) => (glassy() ? glassHover(s, t) : s.bg(t.hover)))))
+        .when(!w.active, (el) => (glassy() ? glassHovered(el.relative(), t, 8) : el.hover((s) => s.bg(t.hover)))))
       // On the mini rail only the square you can see is clickable, not the row around it.
       .when(!small, (el) => el.on_hover(hover).on_click(select))
       .on_mouse_down("right", () => this.menu(w))

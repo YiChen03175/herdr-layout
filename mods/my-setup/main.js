@@ -60,7 +60,10 @@ function glassStyle(t) {
       // corners stay inside its 10 px rounding (at 4 across and 3 down, they do).
       // No shadow: on the see-through window a shadow's opacity adds to the glass's,
       // leaving a dark haze round the card (worst at the corners); its edge parts it.
-      "main-card": { background: solid, radius: 10, border: { width: 1, color: `${ink}1a` }, padding: [3, 4] },
+      // No outline either (a clear one, so what's inside stays put): the shown tab (my-tabs)
+      // is the card grown up into the bar, and a line would cut them apart. The side
+      // panel's card takes this outline too.
+      "main-card": { background: solid, radius: 10, border: { width: 1, color: "#00000000" }, padding: [3, 4] },
     },
   };
 }
